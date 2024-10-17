@@ -3582,15 +3582,15 @@ class SGD(SolverFirstOrderSto):
 #    'rand': SVRG_VarianceReductionMethod_Random
 #}
 
-step_types_mapper = {
-    'fixed': SVRG_StepType_Fixed,
-    'bb': SVRG_StepType_BarzilaiBorwein
-}
+#step_types_mapper = {
+#    'fixed': SVRG_StepType_Fixed,
+#    'bb': SVRG_StepType_BarzilaiBorwein
+#}
 
-dtype_class_mapper = {
-    np.dtype('float32'): _SVRGFloat,
-    np.dtype('float64'): _SVRGDouble
-}
+#dtype_class_mapper = {
+#    np.dtype('float32'): _SVRGFloat,
+#    np.dtype('float64'): _SVRGDouble
+#}
 
 
 class SVRG(SolverFirstOrderSto):
