@@ -134,6 +134,20 @@ class SVRG_StepType_BarzilaiBorwein:
         pass
 
 
+class _SVRGFloat:
+    def __init__(self, *args, **kwargs):
+        pass
+class _SVRGDouble:
+    def __init__(self, *args, **kwargs):
+        pass
+class _SDCAFloat:
+    def __init__(self, *args, **kwargs):
+        pass
+class _SDCADouble:
+    def __init__(self, *args, **kwargs):
+        pass
+
+
 variance_reduction_methods_mapper = {
     'last': SVRG_VarianceReductionMethod_Last,
     'avg': SVRG_VarianceReductionMethod_Average,
