@@ -30,6 +30,14 @@ import pylab as pl
 import warnings
 warnings.filterwarnings('ignore')
 
+class _ProxBinarsityDouble:
+    def __init__(self, *args, **kwargs):
+        pass
+
+class _ProxBinarsityFloat:
+    def __init__(self, *args, **kwargs):
+        pass
+
 
 dtype_map = {
     np.dtype("float64"): _ProxBinarsityDouble,
