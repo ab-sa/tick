@@ -4429,7 +4429,7 @@ class LearnerOptim(ABC, Base):
     #    'svrg': 'SVRG',
     #    'bfgs': 'BFGS',
     #    'sdca': 'SDCA'
-    }
+    #}
     _solvers = {
         'gd': GD,
         'agd': AGD,
