@@ -4439,6 +4439,10 @@ class LearnerOptim(ABC, Base):
                 else:
                     penalty_args += [blocks_start, blocks_length]
 
+            print(f"Penalty: {penalty}")
+            print(f"Type of penalty function: {type(self._penalties.get(penalty))}")
+
+            
             prox_obj = self._penalties[penalty](*penalty_args,
                                                 **extra_prox_kwarg)
 
