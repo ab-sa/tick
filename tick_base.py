@@ -3899,10 +3899,10 @@ class SVRG(SolverFirstOrderSto):
         return mins
 
 
-dtype_class_mapper = {
-    np.dtype('float32'): _SDCAFloat,
-    np.dtype('float64'): _SDCADouble
-}
+#dtype_class_mapper = {
+#    np.dtype('float32'): _SDCAFloat,
+#    np.dtype('float64'): _SDCADouble
+#}
 
 
 class SDCA(SolverFirstOrderSto):
