@@ -36,10 +36,15 @@ warnings.filterwarnings('ignore')
 #    'float32': np.float32,
     # Add other types as needed
 #}
-dtype_map = {
-    np.dtype('float64'): 'ProxBinarsityFloat64',  # Ensure these names match the C++ class names
-    np.dtype('float32'): 'ProxBinarsityFloat32',
+#dtype_map = {
+#    np.dtype('float64'): 'ProxBinarsityFloat64',  # Ensure these names match the C++ class names
+#    np.dtype('float32'): 'ProxBinarsityFloat32',
     # Add other types as necessary, based on how your library handles them
+#}
+dtype_map = {
+    np.dtype('float64'): ProxBinarsityFloat64Class,  # Not a string, but the actual class object
+    np.dtype('float32'): ProxBinarsityFloat32Class,
+    # More mappings...
 }
 
 
@@ -1445,6 +1450,10 @@ class ProxElasticNet(Prox):
         self.dtype = self._extract_dtype(dtype_or_object_with_dtype)
         prox_class = self._get_typed_class(dtype_or_object_with_dtype,
                                            dtype_map)
+        print(f"prox_class: {prox_class}")  # Add this for debugging
+        if isinstance(prox_class, str):
+            raise TypeError(f"prox_class is a string: {prox_class}, expected callable object")
+ 
         if self.range is None:
             return prox_class(self.strength, self.ratio, self.positive)
         else:
