@@ -3576,11 +3576,11 @@ class SGD(SolverFirstOrderSto):
                          self.record_every, self.seed))
 
 
-variance_reduction_methods_mapper = {
-    'last': SVRG_VarianceReductionMethod_Last,
-    'avg': SVRG_VarianceReductionMethod_Average,
-    'rand': SVRG_VarianceReductionMethod_Random
-}
+#variance_reduction_methods_mapper = {
+#    'last': SVRG_VarianceReductionMethod_Last,
+#    'avg': SVRG_VarianceReductionMethod_Average,
+#    'rand': SVRG_VarianceReductionMethod_Random
+#}
 
 step_types_mapper = {
     'fixed': SVRG_StepType_Fixed,
