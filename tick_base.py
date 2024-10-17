@@ -30,20 +30,23 @@ import pylab as pl
 import warnings
 warnings.filterwarnings('ignore')
 
+from . import ProxZero
+from . import ProxPositive
+from . import ProxL2Sq
+from . import ProxL2
+from . import ProxL1
+from . import ProxL1w
+from . import ProxTV
+from . import ProxNuclear
+from . import ProxSlope
+from . import ProxElasticNet
+from . import ProxMulti
+from . import ProxEquality
+from . import ProxBinarsity
+from . import ProxGroupL1
 
-#dtype_map = {
-#    'float64': np.float64,
-#    'float32': np.float32,
-    # Add other types as needed
-#}
-#dtype_map = {
-#    np.dtype('float64'): 'ProxBinarsityFloat64',  # Ensure these names match the C++ class names
-#    np.dtype('float32'): 'ProxBinarsityFloat32',
-    # Add other types as necessary, based on how your library handles them
-#}
+
 dtype_map = {
-    #np.dtype('float64'): ProxBinarsityFloat64Class,  # Not a string, but the actual class object
-    #np.dtype('float32'): ProxBinarsityFloat32Class,
     np.dtype("float64"): _ProxBinarsityDouble,
     np.dtype("float32"): _ProxBinarsityFloat,
     np.dtype("float64"): _ProxElasticNetDouble,
@@ -1081,6 +1084,7 @@ class ModelFirstOrder(Model):
         self._grad(coeffs, out=out)
         return self._loss(coeffs)
 
+deep_copy_ignore_fields = ["_prox"]
 
 class Prox(ABC, Base):
     """An abstract base class for a proximal operator
