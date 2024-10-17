@@ -45,7 +45,33 @@ dtype_map = {
     #np.dtype('float64'): ProxBinarsityFloat64Class,  # Not a string, but the actual class object
     #np.dtype('float32'): ProxBinarsityFloat32Class,
     np.dtype("float64"): _ProxBinarsityDouble,
-    np.dtype("float32"): _ProxBinarsityFloat    # More mappings...
+    np.dtype("float32"): _ProxBinarsityFloat,
+    np.dtype("float64"): _ProxElasticNetDouble,
+    np.dtype("float32"): _ProxElasticNetFloat,
+    np.dtype("float64"): _ProxEqualityDouble,
+    np.dtype("float32"): _ProxEqualityFloat,
+    np.dtype("float64"): _ProxGroupL1Double,
+    np.dtype("float32"): _ProxGroupL1Float,
+    np.dtype("float64"): _ProxL1Double,
+    np.dtype("float32"): _ProxL1Float,
+    np.dtype("float64"): _ProxL1wDouble,
+    np.dtype("float32"): _ProxL1wFloat,
+    np.dtype("float64"): _ProxL2Double,
+    np.dtype("float32"): _ProxL2Float,
+    np.dtype("float64"): _ProxL2sqDouble,
+    np.dtype("float32"): _ProxL2sqFloat,
+    np.dtype("float64"): _ProxMultiDouble,
+    np.dtype("float32"): _ProxMultiFloat,
+    np.dtype("float64"): _ProxSortedL1Double,
+    np.dtype("float32"): _ProxSortedL1Float,
+    np.dtype("float64"): _ProxPositiveDouble,
+    np.dtype("float32"): _ProxPositiveFloat,
+    np.dtype("float64"): _ProxSlopeDouble,
+    np.dtype("float32"): _ProxSlopeFloat,
+    np.dtype("float64"): _ProxTVDouble,
+    np.dtype("float32"): _ProxTVFloat,
+    np.dtype("float64"): _ProxZeroDouble,
+    np.dtype("float32"): _ProxZeroFloat
 }
 
 
