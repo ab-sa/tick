@@ -116,6 +116,17 @@ class _ProxZeroFloat:
         pass
 
 
+class SVRG_VarianceReductionMethod_Last:
+    def __init__(self, *args, **kwargs):
+        pass
+class SVRG_VarianceReductionMethod_Average:
+    def __init__(self, *args, **kwargs):
+        pass
+class SVRG_VarianceReductionMethod_Random:
+    def __init__(self, *args, **kwargs):
+        pass
+
+
 variance_reduction_methods_mapper = {
     'last': SVRG_VarianceReductionMethod_Last,
     'avg': SVRG_VarianceReductionMethod_Average,
