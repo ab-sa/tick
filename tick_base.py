@@ -31,6 +31,13 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
+dtype_map = {
+    'float64': np.float64,
+    'float32': np.float32,
+    # Add other types as needed
+}
+
+
 # The metaclass inherits from ABCMeta and not type, since we'd like to
 # do abstract classes in tick that inherits from ABC
 
