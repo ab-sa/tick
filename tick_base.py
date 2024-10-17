@@ -126,6 +126,13 @@ class SVRG_VarianceReductionMethod_Random:
     def __init__(self, *args, **kwargs):
         pass
 
+class SVRG_StepType_Fixed:
+    def __init__(self, *args, **kwargs):
+        pass
+class SVRG_StepType_BarzilaiBorwein:
+    def __init__(self, *args, **kwargs):
+        pass
+
 
 variance_reduction_methods_mapper = {
     'last': SVRG_VarianceReductionMethod_Last,
