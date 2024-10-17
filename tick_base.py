@@ -127,7 +127,7 @@ step_types_mapper = {
 }
 dtype_class_mapper = {
     np.dtype('float32'): _SVRGFloat,
-    np.dtype('float64'): _SVRGDouble
+    np.dtype('float64'): _SVRGDouble,
     np.dtype('float32'): _SDCAFloat,
     np.dtype('float64'): _SDCADouble
 }
