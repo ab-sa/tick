@@ -116,6 +116,22 @@ class _ProxZeroFloat:
         pass
 
 
+variance_reduction_methods_mapper = {
+    'last': SVRG_VarianceReductionMethod_Last,
+    'avg': SVRG_VarianceReductionMethod_Average,
+    'rand': SVRG_VarianceReductionMethod_Random
+}
+step_types_mapper = {
+    'fixed': SVRG_StepType_Fixed,
+    'bb': SVRG_StepType_BarzilaiBorwein
+}
+dtype_class_mapper = {
+    np.dtype('float32'): _SVRGFloat,
+    np.dtype('float64'): _SVRGDouble
+    np.dtype('float32'): _SDCAFloat,
+    np.dtype('float64'): _SDCADouble
+}
+
 dtype_map = {
     np.dtype("float64"): _ProxBinarsityDouble,
     np.dtype("float32"): _ProxBinarsityFloat,
@@ -3715,21 +3731,21 @@ class SGD(SolverFirstOrderSto):
                          self.record_every, self.seed))
 
 
-#variance_reduction_methods_mapper = {
-#    'last': SVRG_VarianceReductionMethod_Last,
-#    'avg': SVRG_VarianceReductionMethod_Average,
-#    'rand': SVRG_VarianceReductionMethod_Random
-#}
+variance_reduction_methods_mapper = {
+    'last': SVRG_VarianceReductionMethod_Last,
+    'avg': SVRG_VarianceReductionMethod_Average,
+    'rand': SVRG_VarianceReductionMethod_Random
+}
 
-#step_types_mapper = {
-#    'fixed': SVRG_StepType_Fixed,
-#    'bb': SVRG_StepType_BarzilaiBorwein
-#}
+step_types_mapper = {
+    'fixed': SVRG_StepType_Fixed,
+    'bb': SVRG_StepType_BarzilaiBorwein
+}
 
-#dtype_class_mapper = {
-#    np.dtype('float32'): _SVRGFloat,
-#    np.dtype('float64'): _SVRGDouble
-#}
+dtype_class_mapper = {
+    np.dtype('float32'): _SVRGFloat,
+    np.dtype('float64'): _SVRGDouble
+}
 
 
 class SVRG(SolverFirstOrderSto):
@@ -4036,12 +4052,6 @@ class SVRG(SolverFirstOrderSto):
                       str(solvers[i].time_elapsed) + " seconds")
             solvers[i]._post_solve_and_record_in_cpp(mins[i], solvers[i]._solver.get_first_obj())
         return mins
-
-
-#dtype_class_mapper = {
-#    np.dtype('float32'): _SDCAFloat,
-#    np.dtype('float64'): _SDCADouble
-#}
 
 
 class SDCA(SolverFirstOrderSto):
