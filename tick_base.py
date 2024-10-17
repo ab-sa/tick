@@ -1708,6 +1708,2431 @@ class ProxBinarsity(ProxWithGroups):
 
 
 
+from numpy.linalg import norm
+from collections import defaultdict
+import dill
+
+def spars_func(coeffs, **kwargs):
+    eps = np.finfo(coeffs.dtype).eps
+    return np.sum(np.abs(coeffs) > eps, axis=None)
+
+
+class History(Base):
+    """A class to manage the history along iterations of a solver
+
+    Attributes
+    ----------
+    print_order : `list` or `str`
+        The list of values to print along iterations
+
+    values : `dict`
+        A `dict` containing the history. Key is the value name and
+        values are the values taken along the iterations
+
+    last_values : `dict`
+        A `dict` containing all the last history values
+
+    _minimum_col_width : `int`
+        Minimal size of a column when printing the history
+
+    _minimizer : `None` or `numpy.ndarray`
+        The minimizer of the objective. `None` if not specified.
+        This is useful to compute a distance to the optimum.
+
+    _minimum : `None` or `float`
+        The minimal (optimal) value of the objective. `None` if not
+        specified. This is useful to compute a distance to the optimum.
+
+    _print_style : `list` or `str`
+        The display style of all printed numbers
+
+    _history_func : `dict`
+        A dict given for all values the function to be applied before
+        saving and displaying in history. This is useful for computing
+        the sparsity, the rank, among other things, of the iterates
+        along iterations of the solver
+
+    _n_iter : `int`
+        The current iteration number
+
+    _col_widths : `list` or `int`
+        A list containing the computed width of each column used for
+        printing the history, based on the name length of the column
+    """
+
+    _attrinfos = {
+        "values": {
+            "writable": False
+        },
+        "last_values": {
+            "writable": False
+        },
+    }
+
+    def __init__(self):
+        Base.__init__(self)
+        self._minimum_col_width = 9
+        self.print_order = ["n_iter", "obj", "step", "rel_obj"]
+        # Instantiate values of the history
+        self._clear()
+
+        self._minimizer = None
+        self._minimum = None
+        self._set("values", None)
+        self._col_widths = None
+        self._n_iter = None
+
+        # History function to compute history values based on parameters
+        # used in a solver
+        history_func = {}
+        self._history_func = history_func
+
+        # Default print style of history values. Default is %.2e
+        print_style = defaultdict(lambda: "%.2e")
+        print_style["n_iter"] = "%d"
+        print_style["n_epoch"] = "%d"
+        print_style["n_inner_prod"] = "%d"
+        print_style["spars"] = "%d"
+        print_style["rank"] = "%d"
+        self._print_style = print_style
+
+    def _clear(self):
+        """Reset history values"""
+        self._set("values", defaultdict(list))
+
+    def _update(self, **kwargs):
+        """Update the history along the iterations.
+
+        For each keyword argument, we apply the history function corresponding
+        to this keyword, and use its results in the history
+        """
+        self._n_iter = kwargs["n_iter"]
+        history_func = self._history_func
+        # We loop on both, history functions and kerword arguments
+        keys = set(kwargs.keys()).union(set(history_func.keys()))
+        for key in keys:
+            # Either it has a corresponding history function which we
+            # apply on all keywords
+            if key in history_func:
+                func = history_func[key]
+                self.values[key].append(func(**kwargs))
+            # Either we only record the value
+            else:
+                value = kwargs[key]
+                self.values[key].append(value)
+
+    def _format(self, name, index):
+        try:
+            formatted_str = self._print_style[name] % \
+                            self.values[name][index]
+        except TypeError:
+            formatted_str = str(self.values[name][index])
+        return formatted_str
+
+    def _print_header(self):
+        min_width = self._minimum_col_width
+        line = ' | '.join(
+            list([
+                name.center(min_width) for name in self.print_order
+                if name in self.values
+            ]))
+        names = [name.center(min_width) for name in self.print_order]
+        self._col_widths = list(map(len, names))
+        print(line)
+
+    def _print_line(self, index):
+        line = ' | '.join(
+            list([
+                self._format(name, index).rjust(self._col_widths[i])
+                for i, name in enumerate(self.print_order)
+                if name in self.values
+            ]))
+        print(line)
+
+    def _print_history(self):
+        """Verbose the current line of history
+        """
+        # If this is the first iteration, plot the history's column
+        # names
+        if self._col_widths is None:
+            self._print_header()
+
+        self._print_line(-1)
+
+    def print_full_history(self):
+        """Verbose the whole history
+        """
+        self._print_header()
+        n_lines = len(next(iter(self.values.values())))
+
+        for i in range(n_lines):
+            self._print_line(i)
+
+    @property
+    def last_values(self):
+        last_values = {}
+        for key, hist in self.values.items():
+            last_values[key] = hist[-1]
+        return last_values
+
+    def set_minimizer(self, minimizer: np.ndarray):
+        """Set the minimizer of the objective, to compute distance
+        to it along iterations
+
+        Parameters
+        ----------
+        minimizer : `numpy.ndarray`, shape=(n_coeffs,)
+            The minimizer of the objective
+
+        Notes
+        -----
+        This adds dist_coeffs in history (distance to the minimizer)
+        which is printed along iterations
+        """
+        self._minimizer = minimizer.copy()
+        self._history_func["dist_coeffs"] = \
+            lambda x, **kwargs: norm(x - self._minimizer)
+        print_order = self.print_order
+        if "dist_coeffs" not in print_order:
+            print_order.append("dist_coeffs")
+
+    def set_minimum(self, minimum: float):
+        """Set the minimum of the objective, to compute distance to the
+        optimum along iterations
+
+        Parameters
+        ----------
+        minimum : `float`
+            The minimizer of the objective
+
+        Notes
+        -----
+        This adds dist_obj in history (distance to the minimum) which
+        is printed along iterations
+        """
+        self._minimum = minimum
+        self._history_func["dist_obj"] = \
+            lambda obj, **kwargs: obj - self._minimum
+        print_order = self.print_order
+        if "dist_obj" not in print_order:
+            print_order.append("dist_obj")
+
+    def _as_dict(self):
+        dd = Base._as_dict(self)
+        dd.pop("values", None)
+        return dd
+
+    # We use dill for serialization because history uses lambda functions
+    def __getstate__(self):
+        return dill.dumps(self.__dict__)
+
+    def __setstate__(self, state):
+        object.__setattr__(self, '__dict__', dill.loads(state))
+
+
+class Solver(Base):
+    """
+    The base class for a solver. In only deals with verbosing
+    information, creating an History object, etc.
+
+    Parameters
+    ----------
+    tol : `float`, default=0
+        The tolerance of the solver (iterations stop when the stopping
+        criterion is below it). By default the solver does ``max_iter``
+        iterations
+
+    max_iter : `int`
+        Maximum number of iterations of the solver
+
+    verbose : `bool`, default=True
+        If `True`, we verbose things, otherwise the solver does not
+        print anything (but records information in history anyway)
+
+    print_every : `int`, default = 10
+        Print history information every time the iteration number is a
+        multiple of ``print_every``
+
+    record_every : `int`, default = 1
+        Information along iteration is recorded in history each time the
+        iteration number of a multiple of ``record_every``
+
+    Attributes
+    ----------
+    time_start : `str`
+        Start date of the call to solve()
+
+    time_elapsed : `float`
+        Duration of the call to solve(), in seconds
+
+    time_end : `str`
+        End date of the call to solve()
+
+    Notes
+    -----
+    This class should not be used by end-users
+    """
+
+    _attrinfos = {
+        "history": {
+            "writable": False
+        },
+        "solution": {
+            "writable": False
+        },
+        "time_start": {
+            "writable": False
+        },
+        "time_elapsed": {
+            "writable": False
+        },
+        "time_end": {
+            "writable": False
+        },
+        "_time_start": {
+            "writable": False
+        },
+        "_record_every": { }
+    }
+
+    def __init__(self, tol=0., max_iter=100, verbose=True, print_every=10,
+                 record_every=1):
+        Base.__init__(self)
+        self.tol = tol
+        self.max_iter = max_iter
+        self.verbose = verbose
+        self.print_every = print_every
+        self.record_every = record_every
+        # Create an history object which deals with printing information
+        # along the optimization loop, and stores information
+        self.history = History()
+        self.time_start = None
+        self._time_start = None
+        self.time_elapsed = None
+        self.time_end = None
+        self.solution = None
+
+    def _start_solve(self):
+        # Reset history
+        self.history._clear()
+        self._set("time_start", self._get_now())
+        self._set("_time_start", time())
+        if self.verbose:
+            print("Launching the solver " + self.name + "...")
+
+    def _end_solve(self):
+        t = time()
+        self._set("time_elapsed", t - self._time_start)
+        if self.verbose:
+            print("Done solving using " + self.name + " in " +
+                  str(self.time_elapsed) + " seconds")
+
+    def solve(self, *args, **kwargs):
+        self._start_solve()
+        self._solve(*args, **kwargs)
+        self._end_solve()
+        return self.solution
+
+    def _should_record_iter(self, n_iter):
+        """Should solver record this iteration or not?
+        """
+        # If we are never supposed to record
+        if self.max_iter < self.print_every and \
+                self.max_iter < self.record_every:
+            return False
+        # Otherwise check that we are either at a specific moment or at the end
+        elif n_iter % self.print_every == 0 or n_iter % self.record_every == 0:
+            return True
+        elif n_iter + 1 == self.max_iter:
+            return True
+        return False
+
+    def _handle_history(self, n_iter: int, force: bool = False, **kwargs):
+        """Handles history for keywords and current iteration
+
+        Parameters
+        ----------
+        n_iter : `int`
+            The current iteration (will determine if we record it or
+            not)
+        force : `bool`
+            If True, we will record no matter the value of ``n_iter``
+
+        **kwargs : `dict`
+            key, value pairs of the values to record in the History of
+            the solver
+        """
+
+        # TODO: this should be protected : _handle_history
+        verbose = self.verbose
+        print_every = self.print_every
+        record_every = self.record_every
+        should_print = verbose and (force or n_iter % print_every == 0)
+        should_record = force or n_iter % print_every == 0 or \
+                        n_iter % record_every == 0
+        if should_record:
+            iter_time = kwargs.get('iter_time', time() - self._time_start)
+            self.history._update(n_iter=n_iter, time=iter_time,
+                                 **kwargs)
+        if should_print:
+            self.history._print_history()
+
+    def print_history(self):
+        self.history.print_full_history()
+
+    @abstractmethod
+    def _solve(self, *args, **kwargs):
+        """Method to be overloaded of the child solver
+        """
+        pass
+
+    @abstractmethod
+    def objective(self, coeffs, loss: float = None):
+        """Compute the objective minimized by the solver at ``coeffs``
+
+        Parameters
+        ----------
+        coeffs : `numpy.ndarray`, shape=(n_coeffs,)
+            The objective is computed at this point
+
+        loss : `float`, default=`None`
+            Gives the value of the loss if already known (allows to
+            avoid its computation in some cases)
+
+        Returns
+        -------
+        output : `float`
+            Value of the objective at given ``coeffs``
+        """
+
+    def get_history(self, key=None):
+        """Returns history of the solver
+
+        Parameters
+        ----------
+        key : `str`, default=None
+            * If `None` all history is returned as a `dict`
+            * If `str`, name of the history element to retrieve
+
+        Returns
+        -------
+        output : `list` or `dict`
+            * If ``key`` is None or ``key`` is not in history then
+              output is a dict containing history of all keys
+            * If ``key`` is the name of an element in the history,
+              output is a `list` containing the history of this element
+        """
+        val = self.history.values.get(key, None)
+        if val is None:
+            return self.history.values
+        else:
+            return val
+
+    @property
+    def record_every(self):
+        return self._record_every
+
+    @record_every.setter
+    def record_every(self, val):
+        self._record_every = val
+
+    def _as_dict(self):
+        dd = Base._as_dict(self)
+        dd.pop("coeffs", None)
+        dd.pop("history", None)
+        return dd
+
+
+class SolverFirstOrder(Solver):
+    """The base class for a first order solver. It defines methods for
+    setting a model (giving first order information) and a proximal
+    operator
+
+    In only deals with verbosing information, and setting parameters
+
+    Parameters
+    ----------
+    step : `float` default=None
+        Step-size of the algorithm
+
+    tol : `float`, default=0
+        The tolerance of the solver (iterations stop when the stopping
+        criterion is below it). By default the solver does ``max_iter``
+        iterations
+
+    max_iter : `int`
+        Maximum number of iterations of the solver
+
+    verbose : `bool`, default=True
+        If `True`, we verbose things, otherwise the solver does not
+        print anything (but records information in history anyway)
+
+    print_every : `int`, default = 10
+        Print history information every time the iteration number is a
+        multiple of ``print_every``
+
+    record_every : `int`, default = 1
+        Information along iteration is recorded in history each time the
+        iteration number of a multiple of ``record_every``
+
+    Attributes
+    ----------
+    model : `Model`
+        The model to solve
+
+    prox : `Prox`
+        Proximal operator to solve
+
+    dtype : `{'float64', 'float32'}`, default='float64'
+        Type of the arrays used. This value is set from model and prox dtypes.
+
+    Notes
+    -----
+    This class should not be used by end-users
+    """
+
+    _attrinfos = {
+        "model": {
+            "writable": False
+        },
+        "prox": {
+            "writable": False
+        },
+        "_initial_n_calls_loss_and_grad": {
+            "writable": False
+        },
+        "_initial_n_calls_loss": {
+            "writable": False
+        },
+        "_initial_n_calls_grad": {
+            "writable": False
+        },
+        "_initial_n_passes_over_data": {
+            "writable": False
+        },
+    }
+
+    def __init__(self, step: float = None, tol: float = 0.,
+                 max_iter: int = 100, verbose: bool = True,
+                 print_every: int = 10, record_every: int = 1):
+
+        self.dtype = None
+
+        Solver.__init__(self, tol, max_iter, verbose, print_every,
+                        record_every)
+        self.model = None
+        self.prox = None
+        self.step = step
+        # Martin's complicated and useless stuff :)
+        self._initial_n_calls_loss_and_grad = 0
+        self._initial_n_calls_loss = 0
+        self._initial_n_calls_grad = 0
+        self._initial_n_passes_over_data = 0
+
+    def validate_model(self, model: Model):
+        if not isinstance(model, Model):
+            raise ValueError('Passed object of class %s is not a '
+                             'Model class' % model.name)
+        if not model._fitted:
+            raise ValueError('Passed object %s has not been fitted. You must '
+                             'call ``fit`` on it before passing it to '
+                             '``set_model``' % model.name)
+
+    def set_model(self, model: Model):
+        """Set model in the solver
+
+        Parameters
+        ----------
+        model : `Model`
+            Sets the model in the solver. The model gives the first
+            order information about the model (loss, gradient, among
+            other things)
+
+        Returns
+        -------
+        output : `Solver`
+            The same instance with given model
+        """
+        self.validate_model(model)
+        self.dtype = model.dtype
+        self._set("model", model)
+        return self
+
+    def _initialize_values(self, x0: np.ndarray = None, step: float = None,
+                           n_empty_vectors: int = 0):
+        """Initialize values
+
+        Parameters
+        ----------
+        x0 : `numpy.ndarray`
+            Starting point
+
+        step : `float`
+            Initial step
+
+        n_empty_vectors : `int`
+            Number of empty vector of like x0 needed
+
+        Returns
+        -------
+        step : `float`
+            Initial step
+
+        obj : `float`
+            Initial value of objective function
+
+        iterate : `numpy.ndarray`
+            copy of starting point
+
+        empty vectors : `numpy.ndarray`
+            n_empty_vectors empty vectors shaped as x0. For example, those
+            vectors can be used to store previous iterate values during
+            a solver execution.
+        """
+        # Initialization
+        if step is None:
+            if self.step is None:
+                raise ValueError("No step specified.")
+            else:
+                step = self.step
+        else:
+            self.step = step
+        if x0 is None:
+            x0 = np.zeros(self.model.n_coeffs, dtype=self.dtype)
+        iterate = x0.copy()
+        obj = self.objective(iterate)
+
+        result = [step, obj, iterate]
+        for _ in range(n_empty_vectors):
+            result.append(np.zeros_like(x0))
+
+        return tuple(result)
+
+    def set_prox(self, prox: Prox):
+        """Set proximal operator in the solver
+
+        Parameters
+        ----------
+        prox : `Prox`
+            The proximal operator of the penalization function
+
+        Returns
+        -------
+        output : `Solver`
+            The solver with given prox
+
+        Notes
+        -----
+        In some solvers, ``set_model`` must be called before
+        ``set_prox``, otherwise and error might be raised
+        """
+        if not isinstance(prox, Prox):
+            raise ValueError('Passed object of class %s is not a '
+                             'Prox class' % prox.name)
+        if self.dtype is None or self.model is None:
+            raise ValueError("Solver must call set_model before set_prox")
+        if prox.dtype != self.dtype:
+            prox = prox.astype(self.dtype)
+        self._set("prox", prox)
+        return self
+
+    def astype(self, dtype_or_object_with_dtype):
+        if self.model is None:
+            raise ValueError("Cannot reassign solver without a model")
+
+        import tick.base.dtype_to_cpp_type
+        new_solver = tick.base.dtype_to_cpp_type.copy_with(
+            self,
+            ["prox", "model"]  # ignore on deepcopy
+        )
+        new_solver.dtype = tick.base.dtype_to_cpp_type.extract_dtype(
+            dtype_or_object_with_dtype)
+        new_solver.set_model(self.model.astype(new_solver.dtype))
+        if self.prox is not None:
+            new_solver.set_prox(self.prox.astype(new_solver.dtype))
+        return new_solver
+
+    def _as_dict(self):
+        dd = Solver._as_dict(self)
+        if self.model is not None:
+            dd["model"] = self.model._as_dict()
+        if self.prox is not None:
+            dd["prox"] = self.prox._as_dict()
+        return dd
+
+    def objective(self, coeffs, loss: float = None):
+        """Compute the objective function
+
+        Parameters
+        ----------
+        coeffs : `np.array`, shape=(n_coeffs,)
+            Point where the objective is computed
+
+        loss : `float`, default=`None`
+            Gives the value of the loss if already known (allows to
+            avoid its computation in some cases)
+
+        Returns
+        -------
+        output : `float`
+            Value of the objective at given ``coeffs``
+        """
+        if self.prox is None:
+            prox_value = 0
+        else:
+            prox_value = self.prox.value(coeffs)
+
+        if loss is None:
+            return self.model.loss(coeffs) + prox_value
+        else:
+            return loss + prox_value
+
+    def solve(self, x0=None, step=None):
+        """
+        Launch the solver
+
+        Parameters
+        ----------
+        x0 : `np.array`, shape=(n_coeffs,), default=`None`
+            Starting point of the solver
+
+        step : `float`, default=`None`
+            Step-size or learning rate for the solver. This can be tuned also
+            using the ``step`` attribute
+
+        Returns
+        -------
+        output : `np.array`, shape=(n_coeffs,)
+            Obtained minimizer for the problem, same as ``solution`` attribute
+        """
+        if x0 is not None and self.dtype is not "float64":
+            x0 = x0.astype(self.dtype)
+
+        if self.model is None:
+            raise ValueError('You must first set the model using '
+                             '``set_model``.')
+        if self.prox is None:
+            raise ValueError('You must first set the prox using '
+                             '``set_prox``.')
+        solution = Solver.solve(self, x0, step)
+        return solution
+
+    def _handle_history(self, n_iter: int, force: bool = False, **kwargs):
+        """Updates the history of the solver.
+
+        Parameters
+        ----------
+
+        Notes
+        -----
+        This should not be used by end-users.
+        """
+        # self.model.n_calls_loss_and_grad is shared by all
+        # solvers using this model
+        # hence it might not be at 0 while starting
+        # /!\ beware if parallel computing...
+        if n_iter == 1:
+            self._set("_initial_n_calls_loss_and_grad",
+                      self.model.n_calls_loss_and_grad)
+            self._set("_initial_n_calls_loss", self.model.n_calls_loss)
+            self._set("_initial_n_calls_grad", self.model.n_calls_grad)
+            self._set("_initial_n_passes_over_data",
+                      self.model.n_passes_over_data)
+        n_calls_loss_and_grad = \
+            self.model.n_calls_loss_and_grad - \
+            self._initial_n_calls_loss_and_grad
+        n_calls_loss = \
+            self.model.n_calls_loss - self._initial_n_calls_loss
+        n_calls_grad = \
+            self.model.n_calls_grad - self._initial_n_calls_grad
+        n_passes_over_data = \
+            self.model.n_passes_over_data - \
+            self._initial_n_passes_over_data
+        Solver.\
+            _handle_history(self, n_iter, force=force,
+                            n_calls_loss_and_grad=n_calls_loss_and_grad,
+                            n_calls_loss=n_calls_loss,
+                            n_calls_grad=n_calls_grad,
+                            n_passes_over_data=n_passes_over_data,
+                            **kwargs)
+
+
+def relative_distance(new_vector, old_vector, use_norm=None):
+    """Computes the relative error with respect to some norm
+    It is useful to evaluate relative change of a vector
+
+    Parameters
+    ----------
+    new_vector : `np.ndarray`
+        New value of the vector
+
+    old_vector : `np.ndarray`
+        old value of the vector to compare with
+
+    use_norm : `int` or `str`
+        The norm to use among those proposed by :func:`.np.linalg.norm`
+
+    Returns
+    -------
+    output : `float`
+        Relative distance
+    """
+    norm_old_vector = norm(old_vector, use_norm)
+    if norm_old_vector == 0:
+        norm_old_vector = 1.
+    return norm(new_vector - old_vector, use_norm) / norm_old_vector
+
+
+class AGD(SolverFirstOrder):
+    """Accelerated proximal gradient descent
+
+    For the minimization of objectives of the form
+
+    .. math::
+        f(w) + g(w),
+
+    where :math:`f` has a smooth gradient and :math:`g` is prox-capable.
+    Function :math:`f` corresponds to the ``model.loss`` method of the model
+    (passed with ``set_model`` to the solver) and :math:`g` corresponds to
+    the ``prox.value`` method of the prox (passed with the ``set_prox`` method).
+    One iteration of :class:`AGD <tick.solver.AGD>` is as follows:
+
+    .. math::
+        w^{k} &\\gets \\mathrm{prox}_{\\eta g} \\big(z^k - \\eta \\nabla f(z^k)
+        \\big) \\\\
+        t_{k+1} &\\gets \\frac{1 + \sqrt{1 + 4 t_k^2}}{2} \\\\
+        z^{k+1} &\\gets w^k + \\frac{t_k - 1}{t_{k+1}} (w^k - w^{k-1})
+
+    where :math:`\\nabla f(w)` is the gradient of :math:`f` given by the
+    ``model.grad`` method and :math:`\\mathrm{prox}_{\\eta g}` is given by the
+    ``prox.call`` method. The step-size :math:`\\eta` can be tuned with
+    ``step``. The iterations stop whenever tolerance ``tol`` is achieved, or
+    after ``max_iter`` iterations. The obtained solution :math:`w` is returned
+    by the ``solve`` method, and is also stored in the ``solution`` attribute
+    of the solver.
+
+    Parameters
+    ----------
+    step : `float`, default=None
+        Step-size parameter, the most important parameter of the solver.
+        Whenever possible, this can be automatically tuned as
+        ``step = 1 / model.get_lip_best()``. If ``linesearch=True``, this is
+        the first step-size to be used in the linesearch (that should be taken
+        as too large).
+
+    tol : `float`, default=1e-10
+        The tolerance of the solver (iterations stop when the stopping
+        criterion is below it)
+
+    max_iter : `int`, default=100
+        Maximum number of iterations of the solver.
+
+    linesearch : `bool`, default=True
+        If `True`, use backtracking linesearch to tune the step automatically.
+
+    verbose : `bool`, default=True
+        If `True`, solver verboses history, otherwise nothing is displayed,
+        but history is recorded anyway
+
+    print_every : `int`, default=10
+        Print history information every time the iteration number is a
+        multiple of ``print_every``. Used only is ``verbose`` is True
+
+    record_every : `int`, default=1
+        Save history information every time the iteration number is a
+        multiple of ``record_every``
+
+    linesearch_step_increase : `float`, default=2.
+        Factor of step increase when using linesearch
+
+    linesearch_step_decrease : `float`, default=0.5
+        Factor of step decrease when using linesearch
+
+    Attributes
+    ----------
+    model : `Model`
+        The model used by the solver, passed with the ``set_model`` method
+
+    prox : `Prox`
+        Proximal operator used by the solver, passed with the ``set_prox``
+        method
+
+    solution : `numpy.array`, shape=(n_coeffs,)
+        Minimizer found by the solver
+
+    history : `dict`-like
+        A dict-type of object that contains history of the solver along
+        iterations. It should be accessed using the ``get_history`` method
+
+    time_start : `str`
+        Start date of the call to ``solve()``
+
+    time_elapsed : `float`
+        Duration of the call to ``solve()``, in seconds
+
+    time_end : `str`
+        End date of the call to ``solve()``
+
+    References
+    ----------
+    * A. Beck and M. Teboulle, A fast iterative shrinkage-thresholding
+      algorithm for linear inverse problems,
+      *SIAM journal on imaging sciences*, 2009
+    """
+
+    def __init__(self, step: float = None, tol: float = 1e-10,
+                 max_iter: int = 100, linesearch: bool = True,
+                 linesearch_step_increase: float = 2.,
+                 linesearch_step_decrease: float = 0.5, verbose: bool = True,
+                 print_every: int = 10, record_every: int = 1):
+        SolverFirstOrder.__init__(self, step=step, tol=tol, max_iter=max_iter,
+                                  verbose=verbose, print_every=print_every,
+                                  record_every=record_every)
+        self.linesearch = linesearch
+        self.linesearch_step_increase = linesearch_step_increase
+        self.linesearch_step_decrease = linesearch_step_decrease
+
+    def _initialize_values(self, x0=None, step=None):
+        if step is None:
+            if self.step is None:
+                if self.linesearch:
+                    # If we use linesearch, then we can choose a large
+                    # initial step
+                    step = 1e9
+                else:
+                    raise ValueError("No step specified.")
+        step, obj, x, prev_x, grad_y = \
+            SolverFirstOrder._initialize_values(self, x0, step,
+                                                n_empty_vectors=2)
+        y = x.copy()
+        t = 1.
+        return x, prev_x, y, grad_y, t, step, obj
+
+    def _gradient_step(self, x, prev_x, y, grad_y, t, prev_t, step):
+        if self.linesearch:
+            step *= self.linesearch_step_increase
+            loss_y, _ = self.model.loss_and_grad(y, out=grad_y)
+            obj_y = self.objective(y, loss=loss_y)
+            while True:
+                x[:] = self.prox.call(y - step * grad_y, step)
+                obj_x = self.objective(x)
+                envelope = obj_y + np.sum(grad_y * (x - y), axis=None) \
+                           + 1. / (2 * step) * norm(x - y) ** 2
+                test = (obj_x <= envelope)
+                if test:
+                    break
+                step *= self.linesearch_step_decrease
+                if step == 0:
+                    break
+        else:
+            grad_y = self.model.grad(y)
+            x[:] = self.prox.call(y - step * grad_y, step)
+        t = np.sqrt((1. + (1. + 4. * t * t))) / 2.
+        y[:] = x + (prev_t - 1) / t * (x - prev_x)
+        return x, y, t, step
+
+    def _solve(self, x0: np.ndarray = None, step: float = None):
+        minimizer, prev_minimizer, y, grad_y, t, step, obj = \
+            self._initialize_values(x0, step)
+        for n_iter in range(self.max_iter):
+            prev_t = t
+            prev_minimizer[:] = minimizer
+
+            # We will record on this iteration and we must be ready
+            if self._should_record_iter(n_iter):
+                prev_obj = self.objective(prev_minimizer)
+
+            minimizer, y, t, step = self._gradient_step(
+                minimizer, prev_minimizer, y, grad_y, t, prev_t, step)
+            if step == 0:
+                print('Step equals 0... at %i' % n_iter)
+                break
+
+            # Let's record metrics
+            if self._should_record_iter(n_iter):
+                rel_delta = relative_distance(minimizer, prev_minimizer)
+                obj = self.objective(minimizer)
+                rel_obj = abs(obj - prev_obj) / abs(prev_obj)
+                converged = rel_obj < self.tol
+                # If converged, we stop the loop and record the last step
+                # in history
+                self._handle_history(n_iter + 1, force=converged, obj=obj,
+                                     x=minimizer.copy(), rel_delta=rel_delta,
+                                     step=step, rel_obj=rel_obj)
+                if converged:
+                    break
+
+        self._set("solution", minimizer)
+        return minimizer
+
+
+class GD(SolverFirstOrder):
+    """Proximal gradient descent
+
+    For the minimization of objectives of the form
+
+    .. math::
+        f(w) + g(w),
+
+    where :math:`f` has a smooth gradient and :math:`g` is prox-capable.
+    Function :math:`f` corresponds to the ``model.loss`` method of the model
+    (passed with ``set_model`` to the solver) and :math:`g` corresponds to
+    the ``prox.value`` method of the prox (passed with the ``set_prox`` method).
+    One iteration of :class:`GD <tick.solver.GD>` is as follows:
+
+    .. math::
+        w \\gets \\mathrm{prox}_{\\eta g} \\big(w - \\eta \\nabla f(w) \\big),
+
+    where :math:`\\nabla f(w)` is the gradient of :math:`f` given by the
+    ``model.grad`` method and :math:`\\mathrm{prox}_{\\eta g}` is given by the
+    ``prox.call`` method. The step-size :math:`\\eta` can be tuned with
+    ``step``. The iterations stop whenever tolerance ``tol`` is achieved, or
+    after ``max_iter`` iterations. The obtained solution :math:`w` is returned
+    by the ``solve`` method, and is also stored in the ``solution`` attribute
+    of the solver.
+
+    Parameters
+    ----------
+    step : `float`, default=None
+        Step-size parameter, the most important parameter of the solver.
+        Whenever possible, this can be automatically tuned as
+        ``step = 1 / model.get_lip_best()``. If ``linesearch=True``, this is
+        the first step-size to be used in the linesearch (that should be taken
+        as too large).
+
+    tol : `float`, default=1e-10
+        The tolerance of the solver (iterations stop when the stopping
+        criterion is below it)
+
+    max_iter : `int`, default=100
+        Maximum number of iterations of the solver.
+
+    linesearch : `bool`, default=True
+        If `True`, use backtracking linesearch to tune the step automatically.
+
+    verbose : `bool`, default=True
+        If `True`, solver verboses history, otherwise nothing is displayed,
+        but history is recorded anyway
+
+    print_every : `int`, default=10
+        Print history information every time the iteration number is a
+        multiple of ``print_every``. Used only is ``verbose`` is True
+
+    record_every : `int`, default=1
+        Save history information every time the iteration number is a
+        multiple of ``record_every``
+
+    linesearch_step_increase : `float`, default=2.
+        Factor of step increase when using linesearch
+
+    linesearch_step_decrease : `float`, default=0.5
+        Factor of step decrease when using linesearch
+
+    Attributes
+    ----------
+    model : `Model`
+        The model used by the solver, passed with the ``set_model`` method
+
+    prox : `Prox`
+        Proximal operator used by the solver, passed with the ``set_prox``
+        method
+
+    solution : `numpy.array`, shape=(n_coeffs,)
+        Minimizer found by the solver
+
+    history : `dict`-like
+        A dict-type of object that contains history of the solver along
+        iterations. It should be accessed using the ``get_history`` method
+
+    time_start : `str`
+        Start date of the call to ``solve()``
+
+    time_elapsed : `float`
+        Duration of the call to ``solve()``, in seconds
+
+    time_end : `str`
+        End date of the call to ``solve()``
+
+    References
+    ----------
+    * A. Beck and M. Teboulle, A fast iterative shrinkage-thresholding
+      algorithm for linear inverse problems,
+      *SIAM journal on imaging sciences*, 2009
+    """
+
+    def __init__(self, step: float = None, tol: float = 0.,
+                 max_iter: int = 100, linesearch: bool = True,
+                 linesearch_step_increase: float = 2.,
+                 linesearch_step_decrease: float = 0.5, verbose: bool = True,
+                 print_every: int = 10, record_every: int = 1):
+        SolverFirstOrder.__init__(self, step=step, tol=tol, max_iter=max_iter,
+                                  verbose=verbose, print_every=print_every,
+                                  record_every=record_every)
+        self.linesearch = linesearch
+        self.linesearch_step_increase = linesearch_step_increase
+        self.linesearch_step_decrease = linesearch_step_decrease
+
+    def _initialize_values(self, x0=None, step=None):
+        if step is None:
+            if self.step is None:
+                if self.linesearch:
+                    # If we use linesearch, then we can choose a large
+                    # initial step
+                    step = 1e9
+                else:
+                    raise ValueError("No step specified.")
+        step, obj, x, prev_x, x_new = \
+            SolverFirstOrder._initialize_values(self, x0, step,
+                                                n_empty_vectors=2)
+        return x, prev_x, x_new, step, obj
+
+    def _gradient_step(self, x, x_new, step):
+        if self.linesearch:
+            step *= self.linesearch_step_increase
+            loss_x, grad_x = self.model.loss_and_grad(x)
+            obj_x = self.objective(x, loss=loss_x)
+            while True:
+                x_new[:] = self.prox.call(x - step * grad_x, step)
+                obj_x_new = self.objective(x_new)
+                envelope = obj_x + np.sum(grad_x * (x_new - x),
+                                          axis=None) \
+                           + 1. / (2 * step) * norm(x_new - x) ** 2
+                test = (obj_x_new <= envelope)
+                if test:
+                    break
+                step *= self.linesearch_step_decrease
+                if step == 0:
+                    break
+        else:
+            grad_x = self.model.grad(x)
+            x_new[:] = self.prox.call(x - step * grad_x, step)
+            obj_x_new = self.objective(x_new)
+        x[:] = x_new
+        return x, step, obj_x_new
+
+    def _solve(self, x0: np.ndarray = None, step: float = None):
+        minimizer, prev_minimizer, x_new, step, obj = self._initialize_values(
+            x0, step)
+        for n_iter in range(self.max_iter):
+            # We will record on this iteration and we must be ready
+            if self._should_record_iter(n_iter):
+                prev_minimizer[:] = minimizer
+                prev_obj = self.objective(prev_minimizer)
+
+            minimizer, step, obj = self._gradient_step(minimizer, x_new, step)
+
+            if step == 0:
+                print('Step equals 0... at %i' % n_iter)
+                break
+
+            # Let's record metrics
+            if self._should_record_iter(n_iter):
+                rel_delta = relative_distance(minimizer, prev_minimizer)
+                obj = self.objective(minimizer)
+                rel_obj = abs(obj - prev_obj) / abs(prev_obj)
+                converged = rel_obj < self.tol
+                # If converged, we stop the loop and record the last step
+                # in history
+                self._handle_history(n_iter + 1, force=converged, obj=obj,
+                                     x=minimizer.copy(), rel_delta=rel_delta,
+                                     step=step, rel_obj=rel_obj)
+                if converged:
+                    break
+
+        self._set("solution", minimizer)
+        return minimizer
+
+
+from scipy.optimize import fmin_bfgs
+
+class BFGS(SolverFirstOrder):
+    """Broyden, Fletcher, Goldfarb, and Shanno algorithm
+
+    This solver is actually a simple wrapping of `scipy.optimize.fmin_bfgs`
+    BFGS (Broyden, Fletcher, Goldfarb, and Shanno) algorithm. This is a
+    quasi-newton algotithm that builds iteratively approximations of the inverse
+    Hessian. This solver can be used to minimize objectives of the form
+
+    .. math::
+        f(w) + g(w),
+
+    for :math:`f` with a smooth gradient and only :math:`g` corresponding to
+    the zero penalization (namely :class:`ProxZero <tick.prox.ProxZero>`)
+    or ridge penalization (namely :class:`ProxL2sq <tick.prox.ProxL2sq>`).
+    Function :math:`f` corresponds to the ``model.loss`` method of the model
+    (passed with ``set_model`` to the solver) and :math:`g` corresponds to
+    the ``prox.value`` method of the prox (passed with the ``set_prox`` method).
+    The iterations stop whenever tolerance ``tol`` is achieved, or
+    after ``max_iter`` iterations. The obtained solution :math:`w` is returned
+    by the ``solve`` method, and is also stored in the ``solution`` attribute
+    of the solver.
+
+    Parameters
+    ----------
+    tol : `float`, default=1e-10
+        The tolerance of the solver (iterations stop when the stopping
+        criterion is below it)
+
+    max_iter : `int`, default=10
+        Maximum number of iterations of the solver
+
+    verbose : `bool`, default=True
+        If `True`, solver verboses history, otherwise nothing is displayed,
+        but history is recorded anyway
+
+    print_every : `int`, default=10
+        Print history information every time the iteration number is a
+        multiple of ``print_every``. Used only is ``verbose`` is True
+
+    record_every : `int`, default=1
+        Save history information every time the iteration number is a
+        multiple of ``record_every``
+
+    Attributes
+    ----------
+    model : `Model`
+        The model used by the solver, passed with the ``set_model`` method
+
+    prox : `Prox`
+        Proximal operator used by the solver, passed with the ``set_prox``
+        method
+
+    solution : `numpy.array`, shape=(n_coeffs,)
+        Minimizer found by the solver
+
+    history : `dict`-like
+        A dict-type of object that contains history of the solver along
+        iterations. It should be accessed using the ``get_history`` method
+
+    time_start : `str`
+        Start date of the call to ``solve()``
+
+    time_elapsed : `float`
+        Duration of the call to ``solve()``, in seconds
+
+    time_end : `str`
+        End date of the call to ``solve()``
+
+    dtype : `{'float64', 'float32'}`, default='float64'
+        Type of the arrays used. This value is set from model and prox dtypes.
+
+    References
+    ----------
+    * Quasi-Newton method of Broyden, Fletcher, Goldfarb and Shanno (BFGS),
+      see Wright, and Nocedal 'Numerical Optimization', 1999, pg. 198.
+    """
+
+    _attrinfos = {"_prox_grad": {"writable": False}}
+
+    def __init__(self, tol: float = 1e-10, max_iter: int = 10,
+                 verbose: bool = True, print_every: int = 1,
+                 record_every: int = 1):
+        SolverFirstOrder.__init__(self, step=None, tol=tol, max_iter=max_iter,
+                                  verbose=verbose, print_every=print_every,
+                                  record_every=record_every)
+        self._prox_grad = None
+
+    def set_prox(self, prox: Prox):
+        """Set proximal operator in the solver.
+
+        Parameters
+        ----------
+        prox : `Prox`
+            The proximal operator of the penalization function
+
+        Returns
+        -------
+        output : `Solver`
+            The solver with given prox
+
+        Notes
+        -----
+        In some solvers, ``set_model`` must be called before
+        ``set_prox``, otherwise and error might be raised.
+        """
+        if type(prox) is ProxZero:
+            SolverFirstOrder.set_prox(self, prox)
+            self._set("_prox_grad", lambda x: x)
+        elif type(prox) is ProxL2Sq:
+            SolverFirstOrder.set_prox(self, prox)
+            self._set("_prox_grad", lambda x: prox.strength * x)
+        else:
+            raise ValueError("BFGS only accepts ProxZero and ProxL2sq "
+                             "for now")
+        return self
+
+    def solve(self, x0=None):
+        """
+        Launch the solver
+
+        Parameters
+        ----------
+        x0 : `np.array`, shape=(n_coeffs,), default=`None`
+            Starting point of the solver
+
+        Returns
+        -------
+        output : `np.array`, shape=(n_coeffs,)
+            Obtained minimizer for the problem
+        """
+        self._start_solve()
+        coeffs = self._solve(x0)
+        self._set("solution", coeffs)
+        self._end_solve()
+        return self.solution
+
+    def _solve(self, x0: np.ndarray = None):
+        if x0 is None:
+            x0 = np.zeros(self.model.n_coeffs, dtype=self.dtype)
+        obj = self.objective(x0)
+
+        # A closure to maintain history along internal BFGS's iterations
+        n_iter = [0]
+        prev_x = x0.copy()
+
+        def insp(xk):
+            if self._should_record_iter(n_iter[0]):
+                prev_obj = self.objective(prev_x)
+                x = xk
+                rel_delta = relative_distance(x, prev_x)
+
+                obj = self.objective(x)
+                rel_obj = abs(obj - prev_obj) / abs(prev_obj)
+                self._handle_history(n_iter[0], force=False, obj=obj,
+                                     x=xk.copy(), rel_delta=rel_delta,
+                                     rel_obj=rel_obj)
+            prev_x[:] = xk
+            n_iter[0] += 1
+
+        insp.n_iter = n_iter
+        insp.self = self
+        insp.prev_x = prev_x
+
+        # We simply call the scipy.optimize.fmin_bfgs routine
+        x_min, f_min, _, _, _, _, _ = \
+            fmin_bfgs(lambda x: self.model.loss(x) + self.prox.value(x),
+                      x0,
+                      lambda x: self.model.grad(x) + self._prox_grad(x),
+                      maxiter=self.max_iter, gtol=self.tol,
+                      callback=insp, full_output=True,
+                      disp=False, retall=False)
+
+        return x_min
+
+    def set_model(self, model: Model):
+        """Set model in the solver
+
+        Parameters
+        ----------
+        model : `Model`
+            Sets the model in the solver. The model gives the first
+            order information about the model (loss, gradient, among
+            other things)
+
+        Returns
+        -------
+        output : `Solver`
+            The `Solver` with given model
+        """
+        self.dtype = model.dtype
+        if np.dtype(self.dtype) != np.dtype("float64"):
+            raise ValueError(
+                "Solver BFGS currenty only accepts float64 array types")
+        return SolverFirstOrder.set_model(self, model)
+
+
+class SolverSto(Base):
+    """The base class for a stochastic solver.
+    In only deals with verbosing information, and setting parameters.
+
+    Parameters
+    ----------
+    epoch_size : `int`, default=0
+        Epoch size. If given before calling set_model, then we'll
+        use the specified value. If not, we ``epoch_size`` is specified
+        by the model itself, when calling set_model
+
+    rand_type : `str`
+        Type of random sampling
+
+        * if ``"unif"`` samples are uniformly drawn among all possibilities
+        * if ``"perm"`` a random permutation of all possibilities is
+          generated and samples are sequentially taken from it. Once all of
+          them have been taken, a new random permutation is generated
+
+    seed : `int`
+        The seed of the random sampling. If it is negative then a random seed
+        (different at each run) will be chosen.
+
+    Notes
+    -----
+    This class should not be used by end-users
+    """
+
+    _attrinfos = {
+        "_solver": {
+            "writable": False
+        },
+        "epoch_size": {
+            "writable": True,
+            "cpp_setter": "set_epoch_size"
+        },
+        "_rand_max": {
+            "writable": False,
+            "cpp_setter": "set_rand_max"
+        },
+        "_rand_type": {
+            "writable": False,
+            "cpp_setter": "set_rand_type"
+        },
+        "seed": {
+            "cpp_setter": "set_seed"
+        }
+    }
+
+    # The name of the attribute that might contain the C++ solver object
+    _cpp_obj_name = "_solver"
+
+    def __init__(self, epoch_size: int = None, rand_type: str = "unif",
+                 seed=-1):
+        Base.__init__(self)
+        # The C++ wrapped solver is to be given in child classes
+        self._solver = None
+        self._rand_type = None
+        self._rand_max = None
+        self.epoch_size = epoch_size
+        self.rand_type = rand_type
+        self.seed = seed
+
+    def set_model(self, model: Model):
+        # Give the C++ wrapped model to the solver
+        self.dtype = model.dtype
+        self._solver.set_model(model._model)
+        # If not already specified, we use the model's epoch_size
+        if self.epoch_size is None:
+            self.epoch_size = model._epoch_size
+        # We always use the _rand_max given by the model
+        self._set_rand_max(model)
+        return self
+
+    def set_prox(self, prox: Prox):
+        if prox._prox is None:
+            raise ValueError("Prox %s is not compatible with stochastic "
+                             "solver %s" % (prox.__class__.__name__,
+                                            self.__class__.__name__))
+            # Give the C++ wrapped prox to the solver
+        if self.dtype is None or self.model is None:
+            raise ValueError("Solver must call set_model before set_prox")
+        if prox.dtype != self.dtype:
+            prox = prox.astype(self.dtype)
+        self._solver.set_prox(prox._prox)
+        return self
+
+    @property
+    def rand_type(self):
+        if self._rand_type == unif:
+            return "unif"
+        if self._rand_type == perm:
+            return "perm"
+        else:
+            raise ValueError("No known ``rand_type``")
+
+    @rand_type.setter
+    def rand_type(self, val):
+        if val not in ["unif", "perm"]:
+            raise ValueError("``rand_type`` can be 'unif' or " "'perm'")
+        else:
+            if val == "unif":
+                enum_val = unif
+            if val == "perm":
+                enum_val = perm
+            self._set("_rand_type", enum_val)
+
+    def _set_rand_max(self, model):
+        model_rand_max = model._rand_max
+        self._set("_rand_max", model_rand_max)
+
+    def _get_typed_class(self, dtype_or_object_with_dtype, dtype_map):
+        """Deduce dtype and return true if C++ _model should be set
+        """
+        import tick.base.dtype_to_cpp_type
+        return tick.base.dtype_to_cpp_type.get_typed_class(
+            self, dtype_or_object_with_dtype, dtype_map)
+
+
+class SolverFirstOrderSto(SolverFirstOrder, SolverSto):
+    """The base class for a first order stochastic solver.
+    It only deals with verbosing information, and setting parameters.
+
+    Parameters
+    ----------
+    epoch_size : `int`
+        Epoch size
+
+    rand_type : `str`
+        Type of random sampling
+
+        * if ``"unif"`` samples are uniformly drawn among all possibilities
+        * if ``"perm"`` a random permutation of all possibilities is
+          generated and samples are sequentially taken from it. Once all of
+          them have been taken, a new random permutation is generated
+
+    tol : `float`, default=0
+        The tolerance of the solver (iterations stop when the stopping
+        criterion is below it). By default the solver does ``max_iter``
+        iterations
+
+    max_iter : `int`
+        Maximum number of iterations of the solver
+
+    verbose : `bool`, default=True
+        If `True`, we verbose things, otherwise the solver does not
+        print anything (but records information in history anyway)
+
+    print_every : `int`, default = 10
+        Print history information every time the iteration number is a
+        multiple of ``print_every``
+
+    record_every : `int`, default = 1
+        Information along iteration is recorded in history each time the
+        iteration number of a multiple of ``record_every``
+
+    seed : `int`
+        The seed of the random sampling. If it is negative then a random seed
+        (different at each run) will be chosen.
+
+    Attributes
+    ----------
+    model : `Solver`
+        The model to solve
+
+    prox : `Prox`
+        Proximal operator to solve
+
+    time_start : `str`
+        Start date of the call to solve()
+
+    time_elapsed : `float`
+        Duration of the call to solve(), in seconds
+
+    time_end : `str`
+        End date of the call to solve()
+
+    Notes
+    -----
+    This class should not be used by end-users
+    """
+
+    _attrinfos = {"_step": {"writable": False}}
+
+    def __init__(self, step: float = None, epoch_size: int = None,
+                 rand_type="unif", tol: float = 0., max_iter=100, verbose=True,
+                 print_every=10, record_every=1, seed=-1):
+
+        self._step = None
+
+        # We must first construct SolverSto (otherwise self.step won't
+        # work in SolverFirstOrder)
+        SolverSto.__init__(self, epoch_size=epoch_size, rand_type=rand_type,
+                           seed=seed)
+        SolverFirstOrder.__init__(self, step=step, tol=tol, max_iter=max_iter,
+                                  verbose=verbose, print_every=print_every,
+                                  record_every=record_every)
+
+        self._set_cpp_solver('float64')
+
+    def set_model(self, model: Model):
+        """Set model in the solver
+
+        Parameters
+        ----------
+        model : `Model`
+            Sets the model in the solver. The model gives the first
+            order information about the model (loss, gradient, among
+            other things)
+
+        Returns
+        -------
+        output : `Solver`
+            The `Solver` with given model
+        """
+        self.validate_model(model)
+        if self.dtype != model.dtype or self._solver is None:
+            self._set_cpp_solver(model.dtype)
+
+        self.dtype = model.dtype
+        SolverFirstOrder.set_model(self, model)
+        SolverSto.set_model(self, model)
+        return self
+
+    def set_prox(self, prox: Prox):
+        """Set proximal operator in the solver
+
+        Parameters
+        ----------
+        prox : `Prox`
+            The proximal operator of the penalization function
+
+        Returns
+        -------
+        output : `Solver`
+            The solver with given prox
+
+        Notes
+        -----
+        In some solvers, ``set_model`` must be called before
+        ``set_prox``, otherwise and error might be raised
+        """
+        SolverFirstOrder.set_prox(self, prox)
+        SolverSto.set_prox(self, prox)
+        return self
+
+    @property
+    def step(self):
+        return self._step
+
+    @step.setter
+    def step(self, val):
+        self._set("_step", val)
+        if val is None:
+            val = 0.
+        if self._solver is not None:
+            self._solver.set_step(val)
+
+    @property
+    def record_every(self):
+        if hasattr(self, '_solver') and self._solver is not None:
+            return self._solver.get_record_every()
+        else:
+            return self._record_every
+
+    @record_every.setter
+    def record_every(self, val):
+        self._record_every = val
+        if hasattr(self, '_solver') and self._solver is not None:
+            self._solver.set_record_every(val)
+
+    def _solve(self, x0: np.array = None, step: float = None):
+        """
+        Launch the solver
+
+        Parameters
+        ----------
+        x0 : np.array, shape=(n_coeffs,)
+            Starting iterate for the solver
+
+        step : float
+            Step-size or learning rate for the solver
+
+        Returns
+        -------
+        output : np.array, shape=(n_coeffs,)
+            Obtained minimizer
+        """
+        from tick.solver import SDCA
+        if not isinstance(self, SDCA):
+            if step is not None:
+                self.step = step
+            step, obj, minimizer, prev_minimizer = \
+                self._initialize_values(x0, step, n_empty_vectors=1)
+            self._solver.set_starting_iterate(minimizer)
+
+        else:
+            # In sdca case x0 is a dual vector
+            step, obj, minimizer, prev_minimizer = \
+                self._initialize_values(None, step, n_empty_vectors=1)
+            if x0 is not None:
+                self._solver.set_starting_iterate(x0)
+
+        if self.verbose or self.tol != 0:
+            self._solve_with_printing(prev_minimizer, minimizer)
+        else:
+            self._solve_and_record_in_cpp(minimizer)
+
+        self._solver.get_minimizer(minimizer)
+        self._set("solution", minimizer)
+        return minimizer
+
+    def _solve_with_printing(self, prev_minimizer, minimizer):
+        # At each iteration we call self._solver.solve that does a full
+        # epoch
+        prev_minimizer[:] = minimizer
+        prev_obj = self.objective(prev_minimizer)
+
+        for n_iter in range(self.max_iter):
+
+            # Launch one epoch using the wrapped C++ solver
+            self._solver.solve()
+
+            # Let's record metrics
+            if self._should_record_iter(n_iter):
+                self._solver.get_minimizer(minimizer)
+                # The step might be modified by the C++ solver
+                # step = self._solver.get_step()
+                obj = self.objective(minimizer)
+                rel_delta = relative_distance(minimizer, prev_minimizer)
+                rel_obj = abs(obj - prev_obj) / abs(prev_obj) \
+                    if prev_obj != 0 else abs(obj)
+                converged = rel_obj < self.tol
+                # If converged, we stop the loop and record the last step
+                # in history
+                self._handle_history(n_iter + 1, force=converged, obj=obj,
+                                     x=minimizer.copy(), rel_delta=rel_delta,
+                                     rel_obj=rel_obj)
+                prev_minimizer[:] = minimizer
+                prev_obj = self.objective(prev_minimizer)
+                if converged:
+                    break
+
+    def _solve_and_record_in_cpp(self, minimizer):
+        prev_obj = self.objective(minimizer)
+        self._solver.set_prev_obj(prev_obj)
+        self._solver.solve(self.max_iter)
+        self._post_solve_and_record_in_cpp(minimizer, prev_obj)
+
+    def _post_solve_and_record_in_cpp(self, minimizer, prev_obj):
+        prev_iterate = minimizer
+        for epoch, iter_time, iterate, obj in zip(
+                self._solver.get_epoch_history(),
+                self._solver.get_time_history(),
+                self._solver.get_iterate_history(),
+                self._solver.get_objectives()):
+            if epoch is self._solver.get_epoch_history()[-1]:
+                # This rel_obj is not exactly the same one as prev_obj is not the
+                # objective of the previous epoch but of the previouly recorded
+                # epoch
+                self._handle_history(
+                    epoch, force=True,
+                    obj=obj, iter_time=iter_time, x=iterate,
+                    rel_delta=relative_distance(iterate, prev_iterate),
+                    rel_obj=abs(obj - prev_obj) / abs(prev_obj) \
+                        if prev_obj != 0 else abs(obj))
+            prev_obj = obj
+            prev_iterate[:] = iterate
+        minimizer = prev_iterate
+
+    def _get_typed_class(self, dtype_or_object_with_dtype, dtype_map):
+        import tick.base.dtype_to_cpp_type
+        return tick.base.dtype_to_cpp_type.get_typed_class(
+            self, dtype_or_object_with_dtype, dtype_map)
+
+    def _extract_dtype(self, dtype_or_object_with_dtype):
+        import tick.base.dtype_to_cpp_type
+        return tick.base.dtype_to_cpp_type.extract_dtype(
+            dtype_or_object_with_dtype)
+
+    @abstractmethod
+    def _set_cpp_solver(self, dtype):
+        pass
+
+    def astype(self, dtype_or_object_with_dtype):
+        if self.model is None:
+            raise ValueError("Cannot reassign solver without a model")
+
+        import tick.base.dtype_to_cpp_type
+        new_solver = tick.base.dtype_to_cpp_type.copy_with(
+            self,
+            ["prox", "model", "_solver"]  # ignore on deepcopy
+        )
+        new_solver._set_cpp_solver(dtype_or_object_with_dtype)
+        new_solver.set_model(self.model.astype(new_solver.dtype))
+        if self.prox is not None:
+            new_solver.set_prox(self.prox.astype(new_solver.dtype))
+        return new_solver
+
+
+class SGD(SolverFirstOrderSto):
+    """Stochastic gradient descent solver
+
+    For the minimization of objectives of the form
+
+    .. math::
+        \\frac 1n \\sum_{i=1}^n f_i(w) + g(w),
+
+    where the functions :math:`f_i` have smooth gradients and :math:`g` is
+    prox-capable. Function :math:`f = \\frac 1n \\sum_{i=1}^n f_i` corresponds
+    to the ``model.loss`` method of the model (passed with ``set_model`` to the
+    solver) and :math:`g` corresponds to the ``prox.value`` method of the
+    prox (passed with the ``set_prox`` method).
+    One iteration of :class:`SGD <tick.solver.SGD>` corresponds to the
+    following iteration applied ``epoch_size`` times:
+
+    .. math::
+        w^{t+1} \\gets \\mathrm{prox}_{\\eta_t g} \\big(w^t - \\eta_t
+        \\nabla f_i(w^t) \\big),
+
+    where :math:`i` is sampled at random (strategy depends on ``rand_type``) at
+    each iteration, where :math:`\\eta_t = \eta / (t + 1)`, with
+    :math:`\\eta > 0` that can be tuned with ``step``. The seed of the random
+    number generator for generation of samples :math:`i` can be seeded with
+    ``seed``. The iterations stop whenever tolerance ``tol`` is achieved, or
+    after ``max_iter`` epochs (namely ``max_iter``:math:`\\times` ``epoch_size``
+    iterations).
+    The obtained solution :math:`w` is returned by the ``solve`` method, and is
+    also stored in the ``solution`` attribute of the solver.
+
+    Parameters
+    ----------
+    step : `float`
+        Step-size parameter, the most important parameter of the solver.
+        A try-an-improve approach should be used.
+
+    tol : `float`, default=1e-10
+        The tolerance of the solver (iterations stop when the stopping
+        criterion is below it)
+
+    max_iter : `int`, default=100
+        Maximum number of iterations of the solver, namely maximum number of
+        epochs (by default full pass over the data, unless ``epoch_size`` has
+        been modified from default)
+
+    verbose : `bool`, default=True
+        If `True`, solver verboses history, otherwise nothing is displayed,
+        but history is recorded anyway
+
+    seed : `int`, default=-1
+        The seed of the random sampling. If it is negative then a random seed
+        (different at each run) will be chosen.
+
+    epoch_size : `int`, default given by model
+        Epoch size, namely how many iterations are made before updating the
+        variance reducing term. By default, this is automatically tuned using
+        information from the model object passed through ``set_model``.
+
+    rand_type : {'unif', 'perm'}, default='unif'
+        How samples are randomly selected from the data
+
+        * if ``'unif'`` samples are uniformly drawn among all possibilities
+        * if ``'perm'`` a random permutation of all possibilities is
+          generated and samples are sequentially taken from it. Once all of
+          them have been taken, a new random permutation is generated
+
+    print_every : `int`, default=10
+        Print history information every time the iteration number is a
+        multiple of ``print_every``. Used only is ``verbose`` is True
+
+    record_every : `int`, default=1
+        Save history information every time the iteration number is a
+        multiple of ``record_every``
+
+    Attributes
+    ----------
+    model : `Model`
+        The model used by the solver, passed with the ``set_model`` method
+
+    prox : `Prox`
+        Proximal operator used by the solver, passed with the ``set_prox``
+        method
+
+    solution : `numpy.array`, shape=(n_coeffs,)
+        Minimizer found by the solver
+
+    history : `dict`-like
+        A dict-type of object that contains history of the solver along
+        iterations. It should be accessed using the ``get_history`` method
+
+    time_start : `str`
+        Start date of the call to ``solve()``
+
+    time_elapsed : `float`
+        Duration of the call to ``solve()``, in seconds
+
+    time_end : `str`
+        End date of the call to ``solve()``
+
+    dtype : `{'float64', 'float32'}`, default='float64'
+        Type of the arrays used. This value is set from model and prox dtypes.
+
+    References
+    ----------
+    * https://en.wikipedia.org/wiki/Stochastic_gradient_descent
+    """
+
+    def __init__(self, step: float = None, epoch_size: int = None,
+                 rand_type: str = "unif", tol: float = 1e-10,
+                 max_iter: int = 100, verbose: bool = True,
+                 print_every: int = 10, record_every: int = 1, seed: int = -1):
+
+        SolverFirstOrderSto.__init__(self, step, epoch_size, rand_type, tol,
+                                     max_iter, verbose, print_every,
+                                     record_every, seed)
+
+    def _set_cpp_solver(self, dtype_or_object_with_dtype):
+        self.dtype = self._extract_dtype(dtype_or_object_with_dtype)
+        solver_class = self._get_typed_class(dtype_or_object_with_dtype,
+                                             dtype_class_mapper)
+
+        # Type mapping None to unsigned long and double does not work...
+        step = self.step
+        if step is None:
+            step = 0.
+        epoch_size = self.epoch_size
+        if epoch_size is None:
+            epoch_size = 0
+
+        self._set(
+            '_solver',
+            solver_class(epoch_size, self.tol, self._rand_type, step,
+                         self.record_every, self.seed))
+
+
+variance_reduction_methods_mapper = {
+    'last': SVRG_VarianceReductionMethod_Last,
+    'avg': SVRG_VarianceReductionMethod_Average,
+    'rand': SVRG_VarianceReductionMethod_Random
+}
+
+step_types_mapper = {
+    'fixed': SVRG_StepType_Fixed,
+    'bb': SVRG_StepType_BarzilaiBorwein
+}
+
+dtype_class_mapper = {
+    np.dtype('float32'): _SVRGFloat,
+    np.dtype('float64'): _SVRGDouble
+}
+
+
+class SVRG(SolverFirstOrderSto):
+    """Stochastic Variance Reduced Gradient solver
+
+    For the minimization of objectives of the form
+
+    .. math::
+        \\frac 1n \\sum_{i=1}^n f_i(w) + g(w),
+
+    where the functions :math:`f_i` have smooth gradients and :math:`g` is
+    prox-capable. Function :math:`f = \\frac 1n \\sum_{i=1}^n f_i` corresponds
+    to the ``model.loss`` method of the model (passed with ``set_model`` to the
+    solver) and :math:`g` corresponds to the ``prox.value`` method of the
+    prox (passed with the ``set_prox`` method).
+    One iteration of :class:`SVRG <tick.solver.SVRG>` corresponds to the
+    following iteration applied ``epoch_size`` times:
+
+    .. math::
+        w \\gets \\mathrm{prox}_{\\eta g} \\big(w - \\eta (\\nabla f_i(w) -
+        \\nabla f_i(\\bar{w}) + \\nabla f(\\bar{w}) \\big),
+
+    where :math:`i` is sampled at random (strategy depends on ``rand_type``) at
+    each iteration, and where :math:`\\bar w` and :math:`\\nabla f(\\bar w)`
+    are updated at the beginning of each epoch, with a strategy that depend on
+    the ``variance_reduction`` parameter. The step-size :math:`\\eta` can be
+    tuned with ``step``, the seed of the random number generator for generation
+    of samples :math:`i` can be seeded with ``seed``. The iterations stop
+    whenever tolerance ``tol`` is achieved, or after ``max_iter`` epochs
+    (namely ``max_iter`` :math:`\\times` ``epoch_size`` iterates).
+    The obtained solution :math:`w` is returned by the ``solve`` method, and is
+    also stored in the ``solution`` attribute of the solver.
+
+    Internally, :class:`SVRG <tick.solver.SVRG>` has dedicated code when
+    the model is a generalized linear model with sparse features, and a
+    separable proximal operator: in this case, each iteration works only in the
+    set of non-zero features, leading to much faster iterates.
+
+    Moreover, when ``n_threads`` > 1, this class actually implements parallel
+    and asynchronous updates of :math:`w`, which is likely to accelerate
+    optimization, depending on the sparsity of the dataset, and the number of
+    available cores.
+
+    Parameters
+    ----------
+    step : `float`
+        Step-size parameter, the most important parameter of the solver.
+        Whenever possible, this can be automatically tuned as
+        ``step = 1 / model.get_lip_max()``. Otherwise, use a try-an-improve
+        approach
+
+    tol : `float`, default=1e-10
+        The tolerance of the solver (iterations stop when the stopping
+        criterion is below it)
+
+    max_iter : `int`, default=10
+        Maximum number of iterations of the solver, namely maximum number of
+        epochs (by default full pass over the data, unless ``epoch_size`` has
+        been modified from default)
+
+    verbose : `bool`, default=True
+        If `True`, solver verboses history, otherwise nothing is displayed,
+        but history is recorded anyway
+
+    seed : `int`, default=-1
+        The seed of the random sampling. If it is negative then a random seed
+        (different at each run) will be chosen.
+
+    n_threads : `int`, default=1
+        Number of threads to use for parallel optimization. The strategy used
+        for this is asynchronous updates of the iterates.
+
+    epoch_size : `int`, default given by model
+        Epoch size, namely how many iterations are made before updating the
+        variance reducing term. By default, this is automatically tuned using
+        information from the model object passed through ``set_model``.
+
+    variance_reduction : {'last', 'avg', 'rand'}, default='last'
+        Strategy used for the computation of the iterate used in
+        variance reduction (also called phase iterate). A warning will be
+        raised if the ``'avg'`` strategy is used when the model is a
+        generalized linear model with sparse features, since it is strongly
+        sub-optimal in this case
+
+        * ``'last'`` : the phase iterate is the last iterate of the previous
+          epoch
+        * ``'avg``' : the phase iterate is the average over the iterates in the
+          past epoch
+        * ``'rand'``: the phase iterate is a random iterate of the previous
+          epoch
+
+    rand_type : {'unif', 'perm'}, default='unif'
+        How samples are randomly selected from the data
+
+        * if ``'unif'`` samples are uniformly drawn among all possibilities
+        * if ``'perm'`` a random permutation of all possibilities is
+          generated and samples are sequentially taken from it. Once all of
+          them have been taken, a new random permutation is generated
+
+    step_type : {'fixed', 'bb'}, default='fixed'
+        How step will evoluate over stime
+
+        * if ``'fixed'`` step will remain equal to the given step accross
+          all iterations. This is the fastest solution if the optimal step
+          is known.
+        * if ``'bb'`` step will be chosen given Barzilai Borwein rule. This
+          choice is much more adaptive and should be used if optimal step if
+          difficult to obtain.
+
+    print_every : `int`, default=1
+        Print history information every time the iteration number is a
+        multiple of ``print_every``. Used only is ``verbose`` is True
+
+    record_every : `int`, default=1
+        Save history information every time the iteration number is a
+        multiple of ``record_every``
+
+    Attributes
+    ----------
+    model : `Model`
+        The model used by the solver, passed with the ``set_model`` method
+
+    prox : `Prox`
+        Proximal operator used by the solver, passed with the ``set_prox``
+        method
+
+    solution : `numpy.array`, shape=(n_coeffs,)
+        Minimizer found by the solver
+
+    history : `dict`-like
+        A dict-type of object that contains history of the solver along
+        iterations. It should be accessed using the ``get_history`` method
+
+    time_start : `str`
+        Start date of the call to ``solve()``
+
+    time_elapsed : `float`
+        Duration of the call to ``solve()``, in seconds
+
+    time_end : `str`
+        End date of the call to ``solve()``
+
+    dtype : `{'float64', 'float32'}`, default='float64'
+        Type of the arrays used. This value is set from model and prox dtypes.
+
+    References
+    ----------
+    * L. Xiao and T. Zhang, A proximal stochastic gradient method with
+      progressive variance reduction, *SIAM Journal on Optimization* (2014)
+
+    * Tan, C., Ma, S., Dai, Y. H., & Qian, Y.
+      Barzilai-Borwein step size for stochastic gradient descent.
+      *Advances in Neural Information Processing Systems* (2016)
+
+    * Mania, H., Pan, X., Papailiopoulos, D., Recht, B., Ramchandran, K. and
+      Jordan, M.I., 2015.
+      Perturbed iterate analysis for asynchronous stochastic optimization.
+    """
+    _attrinfos = {"_step_type_str": {}, "_var_red_str": {}}
+
+    def __init__(self, step: float = None, epoch_size: int = None,
+                 rand_type: str = 'unif', tol: float = 1e-10,
+                 max_iter: int = 10, verbose: bool = True,
+                 print_every: int = 1, record_every: int = 1, seed: int = -1,
+                 variance_reduction: str = 'last', step_type: str = 'fixed',
+                 n_threads: int = 1):
+        self.n_threads = n_threads
+        # temporary to hold step type before dtype is known
+        self._step_type_str = step_type
+        # temporary to hold varience reduction type before dtype is known
+        self._var_red_str = variance_reduction
+
+        SolverFirstOrderSto.__init__(self, step, epoch_size, rand_type, tol,
+                                     max_iter, verbose, print_every,
+                                     record_every, seed=seed)
+
+    @property
+    def variance_reduction(self):
+        return next((k for k, v in variance_reduction_methods_mapper.items()
+                     if v == self._solver.get_variance_reduction()), None)
+
+    @variance_reduction.setter
+    def variance_reduction(self, val: str):
+        if val not in variance_reduction_methods_mapper:
+            raise ValueError(
+                'variance_reduction should be one of "{}", got "{}"'.format(
+                    ', '.join(
+                        sorted(variance_reduction_methods_mapper.keys())),
+                    val))
+        if self.model is not None:
+            if val == 'avg' and self.model._model.is_sparse():
+                warn(
+                    "'avg' variance reduction cannot be used "
+                    "with sparse datasets", UserWarning)
+        self._solver.set_variance_reduction(
+            variance_reduction_methods_mapper[val])
+
+    @property
+    def step_type(self):
+        return next((k for k, v in step_types_mapper.items()
+                     if v == self._solver.get_step_type()), None)
+
+    @step_type.setter
+    def step_type(self, val: str):
+        if val not in step_types_mapper:
+            raise ValueError(
+                'step_type should be one of "{}", got "{}"'.format(
+                    ', '.join(sorted(step_types_mapper.keys())), val))
+        self._solver.set_step_type(step_types_mapper[val])
+
+    def set_model(self, model: Model):
+        """Set model in the solver
+
+        Parameters
+        ----------
+        model : `Model`
+            Sets the model in the solver. The model gives the first
+            order information about the model (loss, gradient, among
+            other things)
+
+        Returns
+        -------
+        output : `Solver`
+            The `Solver` with given model
+        """
+        # We need to check that the setted model is not sparse when the
+        # variance reduction method is 'avg'
+        if self._var_red_str == 'avg' and model._model.is_sparse():
+            warn(
+                "'avg' variance reduction cannot be used with sparse "
+                "datasets. Please change `variance_reduction` before "
+                "passing sparse data.", UserWarning)
+
+        if hasattr(model, "n_threads"):
+            model.n_threads = self.n_threads
+
+        return SolverFirstOrderSto.set_model(self, model)
+
+    def _set_cpp_solver(self, dtype_or_object_with_dtype):
+        self.dtype = self._extract_dtype(dtype_or_object_with_dtype)
+        solver_class = self._get_typed_class(dtype_or_object_with_dtype,
+                                             dtype_class_mapper)
+
+        # Type mapping None to unsigned long and double does not work...
+        step = self.step
+        if step is None:
+            step = 0.
+        epoch_size = self.epoch_size
+        if epoch_size is None:
+            epoch_size = 0
+
+        self._set(
+            '_solver',
+            solver_class(epoch_size, self.tol, self._rand_type, step,
+                         self.record_every, self.seed, self.n_threads))
+
+        self.variance_reduction = self._var_red_str
+        self.step_type = self._step_type_str
+
+    def multi_solve(self, coeffes, solvers, max_iter, threads = None, set_start = True):
+        """Complete function for calling solve on multiple independent SVRG C++ instances
+           Requires valid solvers setup with model and prox. Vectors of instances are
+           peculiar with SWIG, so we use a vector of pointers, populate the C++ vector from
+           Python, then run the solve on each object behind the pointer in C++
+
+        Parameters
+        ----------
+        coeffes : `np.array`, shape=(n_coeffs,)
+            First minimizer and possible starting_iterate for solvers
+        solvers : `List of SVRG`
+            Solver classes to be solved
+
+        max_iter : `int`
+            Default max number of iterations if tolerance not hit
+
+        threads : `optional int`
+            If None - len(solver) threads are spawned
+            otherwise and threadpool with number "threads" is spawned
+        set_start: `bool`
+            If True, coeffes[i] is used for the starting iterate of solvers[i]
+        """
+
+        if len(coeffes) != len(solvers):
+            raise ValueError("size mismatch between coeffes and solvers")
+        mins = []
+        sss = SVRGDoublePtrVector(0)
+        for i in range(len(solvers)):
+            solvers[i]._solver.reset()
+            mins.append(coeffes[i].copy())
+            if threads is None and set_start:
+                solvers[i]._solver.set_starting_iterate(mins[-1])
+            MultiSVRG.push_solver(sss, solvers[i]._solver) # push SVRG C++ pointer to vector sss
+            solvers[i]._start_solve()
+        if threads is None:
+            MultiSVRG.multi_solve(sss, max_iter)
+        elif set_start:
+            MultiSVRG.multi_solve(sss, coeffes, max_iter, threads)
+        else:
+            MultiSVRG.multi_solve(sss, max_iter, threads)
+        for i in range(len(solvers)):
+            solvers[i]._set("time_elapsed", solvers[i]._solver.get_time_history()[-1])
+            if solvers[i].verbose:
+                print("Done solving using " + solvers[i].name + " in " +
+                      str(solvers[i].time_elapsed) + " seconds")
+            solvers[i]._post_solve_and_record_in_cpp(mins[i], solvers[i]._solver.get_first_obj())
+        return mins
+
+
+dtype_class_mapper = {
+    np.dtype('float32'): _SDCAFloat,
+    np.dtype('float64'): _SDCADouble
+}
+
+
+class SDCA(SolverFirstOrderSto):
+    """Stochastic Dual Coordinate Ascent
+
+    For the minimization of objectives of the form
+
+    .. math::
+        \\frac 1n \\sum_{i=1}^n f_i(w^\\top x_i) + g(w),
+
+    where the functions :math:`f_i` have smooth gradients and :math:`g` is
+    prox-capable. This solver actually requires more than that, since it is
+    working in a Fenchel dual formulation of the primal problem given above.
+    First, it requires that some ridge penalization is used, hence the mandatory
+    parameter ``l_l2sq`` below: SDCA will actually minimize the objective
+
+    .. math::
+        \\frac 1n \\sum_{i=1}^n f_i(x_i^\\top w) + g(w) + \\frac{\\lambda}{2}
+        \\| w \\|_2^2,
+
+    where :math:`\lambda` is tuned with the ``l_l2sq`` (see below). Now, putting
+    :math:`h(w) = g(w) + \lambda \|w\|_2^2 / 2`, SDCA maximize
+    the Fenchel dual problem
+
+    .. math::
+        D(\\alpha) = \\frac 1n \\sum_{i=1}^n \\Bigg[ - f_i^*(-\\alpha_i) -
+        \lambda h^*\\Big( \\frac{1}{\\lambda n} \\sum_{i=1}^n \\alpha_i x_i)
+        \\Big) \\Bigg],
+
+    where :math:`f_i^*` and :math:`h^*` and the Fenchel duals of :math:`f_i`
+    and :math:`h` respectively.
+    Function :math:`f = \\frac 1n \\sum_{i=1}^n f_i` corresponds
+    to the ``model.loss`` method of the model (passed with ``set_model`` to the
+    solver) and :math:`g` corresponds to the ``prox.value`` method of the
+    prox (passed with the ``set_prox`` method). One iteration of
+    :class:`SDCA <tick.solver.SDCA>` corresponds to the
+    following iteration applied ``epoch_size`` times:
+
+    .. math::
+        \\begin{align*}
+        \\delta_i &\\gets \\arg\\min_{\\delta} \\Big[ \\; f_i^*(-\\alpha_i -
+        \\delta) + w^\\top x_i \\delta + \\frac{1}{2 \\lambda n} \\| x_i\\|_2^2
+        \\delta^2 \\Big] \\\\
+        \\alpha_i &\\gets \\alpha_i + \\delta_i \\\\
+        v &\\gets v + \\frac{1}{\\lambda n} \\delta_i x_i \\\\
+        w &\\gets \\nabla g^*(v)
+        \\end{align*}
+
+    where :math:`i` is sampled at random (strategy depends on ``rand_type``) at
+    each iteration. The ridge regularization :math:`\\lambda` can be tuned with
+    ``l_l2sq``, the seed of the random number generator for generation
+    of samples :math:`i` can be seeded with ``seed``. The iterations stop
+    whenever tolerance ``tol`` is achieved, or after ``max_iter`` epochs
+    (namely ``max_iter`` :math:`\\times` ``epoch_size`` iterates).
+    The obtained solution :math:`w` is returned by the ``solve`` method, and is
+    also stored in the ``solution`` attribute of the solver. The dual solution
+    :math:`\\alpha` is stored in the ``dual_solution`` attribute.
+
+    Internally, :class:`SDCA <tick.solver.SDCA>` has dedicated code when
+    the model is a generalized linear model with sparse features, and a
+    separable proximal operator: in this case, each iteration works only in the
+    set of non-zero features, leading to much faster iterates.
+
+    Parameters
+    ----------
+    l_l2sq : `float`
+        Level of L2 penalization. L2 penalization is mandatory for SDCA.
+        Convergence properties of this solver are deeply connected to this
+        parameter, which should be understood as the "step" used by the
+        algorithm.
+
+    tol : `float`, default=1e-10
+        The tolerance of the solver (iterations stop when the stopping
+        criterion is below it)
+
+    max_iter : `int`, default=10
+        Maximum number of iterations of the solver, namely maximum number of
+        epochs (by default full pass over the data, unless ``epoch_size`` has
+        been modified from default)
+
+    verbose : `bool`, default=True
+        If `True`, solver verboses history, otherwise nothing is displayed,
+        but history is recorded anyway
+
+    seed : `int`, default=-1
+        The seed of the random sampling. If it is negative then a random seed
+        (different at each run) will be chosen.
+
+    epoch_size : `int`, default given by model
+        Epoch size, namely how many iterations are made before updating the
+        variance reducing term. By default, this is automatically tuned using
+        information from the model object passed through ``set_model``.
+
+    rand_type : {'unif', 'perm'}, default='unif'
+        How samples are randomly selected from the data
+
+        * if ``'unif'`` samples are uniformly drawn among all possibilities
+        * if ``'perm'`` a random permutation of all possibilities is
+          generated and samples are sequentially taken from it. Once all of
+          them have been taken, a new random permutation is generated
+
+    print_every : `int`, default=1
+        Print history information every time the iteration number is a
+        multiple of ``print_every``. Used only is ``verbose`` is True
+
+    record_every : `int`, default=1
+        Save history information every time the iteration number is a
+        multiple of ``record_every``
+
+    Attributes
+    ----------
+    model : `Model`
+        The model used by the solver, passed with the ``set_model`` method
+
+    prox : `Prox`
+        Proximal operator used by the solver, passed with the ``set_prox``
+        method
+
+    solution : `numpy.array`, shape=(n_coeffs,)
+        Minimizer found by the solver
+
+    dual_solution : `numpy.array`
+        Dual vector corresponding to the primal solution obtained by the solver
+
+    history : `dict`-like
+        A dict-type of object that contains history of the solver along
+        iterations. It should be accessed using the ``get_history`` method
+
+    time_start : `str`
+        Start date of the call to ``solve()``
+
+    time_elapsed : `float`
+        Duration of the call to ``solve()``, in seconds
+
+    time_end : `str`
+        End date of the call to ``solve()``
+
+    dtype : `{'float64', 'float32'}`, default='float64'
+        Type of the arrays used. This value is set from model and prox dtypes.
+
+    References
+    ----------
+    * S. Shalev-Shwartz and T. Zhang, Accelerated proximal stochastic dual
+      coordinate ascent for regularized loss minimization, *ICML 2014*
+    """
+
+    _attrinfos = {'l_l2sq': {'cpp_setter': 'set_l_l2sq'}}
+
+    def __init__(self, l_l2sq: float, epoch_size: int = None,
+                 rand_type: str = 'unif', tol: float = 1e-10,
+                 max_iter: int = 10, verbose: bool = True,
+                 print_every: int = 1, record_every: int = 1, seed: int = -1):
+
+        self.l_l2sq = l_l2sq
+        SolverFirstOrderSto.__init__(
+            self, step=0, epoch_size=epoch_size, rand_type=rand_type, tol=tol,
+            max_iter=max_iter, verbose=verbose, print_every=print_every,
+            record_every=record_every, seed=seed)
+
+    def _set_cpp_solver(self, dtype_or_object_with_dtype):
+        self.dtype = self._extract_dtype(dtype_or_object_with_dtype)
+        solver_class = self._get_typed_class(dtype_or_object_with_dtype,
+                                             dtype_class_mapper)
+
+        epoch_size = self.epoch_size
+        if epoch_size is None:
+            epoch_size = 0
+
+        self._set(
+            '_solver',
+            solver_class(self.l_l2sq, epoch_size, self.tol, self._rand_type,
+                         self.record_every, self.seed))
+
+    def objective(self, coeffs, loss: float = None):
+        """Compute the objective minimized by the solver at ``coeffs``
+
+        Parameters
+        ----------
+        coeffs : `numpy.ndarray`, shape=(n_coeffs,)
+            The objective is computed at this point
+
+        loss : `float`, default=`None`
+            Gives the value of the loss if already known (allows to
+            avoid its computation in some cases)
+
+        Returns
+        -------
+        output : `float`
+            Value of the objective at given ``coeffs``
+        """
+        prox_l2_value = 0.5 * self.l_l2sq * np.linalg.norm(coeffs) ** 2
+        return SolverFirstOrderSto.objective(self, coeffs,
+                                             loss) + prox_l2_value
+
+    def dual_objective(self, dual_coeffs):
+        """Compute the dual objective at ``dual_coeffs``
+
+        Parameters
+        ----------
+        dual_coeffs : `numpy.ndarray`, shape=(n_samples,)
+            The dual objective objective is computed at this point
+
+        Returns
+        -------
+        output : `float`
+            Value of the dual objective at given ``dual_coeffs``
+        """
+        primal = self.model._sdca_primal_dual_relation(self.l_l2sq,
+                                                       dual_coeffs)
+        prox_l2_value = 0.5 * self.l_l2sq * np.linalg.norm(primal) ** 2
+        return self.model.dual_loss(dual_coeffs) - prox_l2_value
+
+    def _set_rand_max(self, model):
+        try:
+            # Some model, like Poisreg with linear link, have a special
+            # rand_max for SDCA
+            model_rand_max = model._sdca_rand_max
+        except (AttributeError, NotImplementedError):
+            model_rand_max = model._rand_max
+
+        self._set("_rand_max", model_rand_max)
+
+    @property
+    def dual_solution(self):
+        return self._solver.get_dual_vector()
+
+
+
+
+
 class LearnerOptim(ABC, Base):
     """Learner for all models that are inferred with a `tick.solver`
     and a `tick.prox`
@@ -1901,7 +4326,7 @@ class LearnerOptim(ABC, Base):
     def _construct_solver_obj(self, solver, step, max_iter, tol, print_every,
                               record_every, verbose, sdca_ridge_strength):
         # Parameters of the solver
-        from tick.solver import AGD, GD, BFGS, SGD, SVRG, SDCA
+        #from tick.solver import AGD, GD, BFGS, SGD, SVRG, SDCA
         solvers = {
             'AGD': AGD,
             'BFGS': BFGS,
