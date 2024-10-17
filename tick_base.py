@@ -42,9 +42,10 @@ warnings.filterwarnings('ignore')
     # Add other types as necessary, based on how your library handles them
 #}
 dtype_map = {
-    np.dtype('float64'): ProxBinarsityFloat64Class,  # Not a string, but the actual class object
-    np.dtype('float32'): ProxBinarsityFloat32Class,
-    # More mappings...
+    #np.dtype('float64'): ProxBinarsityFloat64Class,  # Not a string, but the actual class object
+    #np.dtype('float32'): ProxBinarsityFloat32Class,
+    np.dtype("float64"): _ProxBinarsityDouble,
+    np.dtype("float32"): _ProxBinarsityFloat    # More mappings...
 }
 
 
