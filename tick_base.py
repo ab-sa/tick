@@ -4422,14 +4422,23 @@ class LearnerOptim(ABC, Base):
         },
     }
 
-    _solvers = {
-        'gd': 'GD',
-        'agd': 'AGD',
-        'sgd': 'SGD',
-        'svrg': 'SVRG',
-        'bfgs': 'BFGS',
-        'sdca': 'SDCA'
+    #_solvers = {
+    #    'gd': 'GD',
+    #    'agd': 'AGD',
+    #    'sgd': 'SGD',
+    #    'svrg': 'SVRG',
+    #    'bfgs': 'BFGS',
+    #    'sdca': 'SDCA'
     }
+    _solvers = {
+        'gd': GD,
+        'agd': AGD,
+        'sgd': SGD,
+        'svrg': SVRG,
+        'bfgs': BFGS,
+        'sdca': SDCA
+    }
+    
     _solvers_with_linesearch = ['gd', 'agd']
     _solvers_with_step = ['gd', 'agd', 'svrg', 'sgd']
     _solvers_stochastic = ['sgd', 'svrg', 'sdca']
