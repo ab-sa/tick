@@ -31,11 +31,17 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
-dtype_map = {
-    'float64': np.float64,
-    'float32': np.float32,
+#dtype_map = {
+#    'float64': np.float64,
+#    'float32': np.float32,
     # Add other types as needed
+#}
+dtype_map = {
+    np.dtype('float64'): 'ProxBinarsityFloat64',  # Ensure these names match the C++ class names
+    np.dtype('float32'): 'ProxBinarsityFloat32',
+    # Add other types as necessary, based on how your library handles them
 }
+
 
 
 # The metaclass inherits from ABCMeta and not type, since we'd like to
