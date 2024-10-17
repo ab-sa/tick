@@ -14,6 +14,7 @@ from numpydoc import docscrape
 import copy
 import pandas as pd
 from scipy.linalg.special_matrices import toeplitz
+from inspect import signature
 
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.preprocessing import OneHotEncoder
@@ -571,6 +572,1887 @@ class Base(metaclass=BaseMeta):
         if 'dtype' in dic and isinstance(dic['dtype'], np.dtype):
             dic['dtype'] = dic['dtype'].name
         return json.dumps(dic, sort_keys=True, indent=2)
+
+
+def actual_kwargs(function):
+    """
+    Decorator that provides the wrapped function with an attribute
+    'actual_kwargs'
+    containing just those keyword arguments actually passed in to the function.
+
+    References
+    ----------
+    http://stackoverflow.com/questions/1408818/getting-the-the-keyword
+    -arguments-actually-passed-to-a-python-method
+
+    Notes
+    -----
+    We override the signature of the decorated function to ensure it will be
+    displayed correctly in sphinx
+    """
+
+    original_signature = signature(function)
+
+    def inner(*args, **kwargs):
+        inner.actual_kwargs = kwargs
+        return function(*args, **kwargs)
+
+    inner.__signature__ = original_signature
+
+    return inner
+
+def safe_array(X, dtype=np.float64):
+    """Checks if the X has the correct type, dtype, and is contiguous.
+
+    Parameters
+    ----------
+    X : `pd.DataFrame` or `np.ndarray` or `crs_matrix`
+        The input data.
+
+    dtype : np.dtype object or string
+        Expected dtype of each X element.
+
+    Returns
+    -------
+    output : `np.ndarray` or `csr_matrix`
+        The input with right type, dtype.
+
+    """
+    if isinstance(X, pd.DataFrame):
+        X = X.values
+
+    if isinstance(X, np.ndarray) and not X.flags['C_CONTIGUOUS']:
+        warn(
+            'Copying array of size %s to create a C-contiguous '
+            'version of it' % str(X.shape), RuntimeWarning)
+        X = np.ascontiguousarray(X)
+
+    if X.dtype != dtype:
+        warn(
+            'Copying array of size %s to convert it in the right '
+            'format' % str(X.shape), RuntimeWarning)
+        X = X.astype(dtype)
+
+    return X
+
+LOSS = "loss"
+GRAD = "grad"
+LOSS_AND_GRAD = "loss_and_grad"
+HESSIAN_NORM = "hessian_norm"
+
+N_CALLS_LOSS = "n_calls_loss"
+N_CALLS_GRAD = "n_calls_grad"
+N_CALLS_LOSS_AND_GRAD = "n_calls_loss_and_grad"
+N_CALLS_HESSIAN_NORM = "n_calls_hessian_norm"
+PASS_OVER_DATA = "n_passes_over_data"
+
+
+class Model(ABC, Base):
+    """Abstract class for a model. It describes a zero-order model,
+    namely only with the ability to compute a loss (goodness-of-fit
+    criterion).
+
+    Attributes
+    ----------
+    n_coeffs : `int` (read-only)
+        Total number of coefficients of the model
+
+    n_calls_loss : `int` (read-only)
+        Number of times ``loss`` has been called so far
+
+    n_passes_over_data : `int` (read-only)
+        Number of effective passes through the data
+
+    dtype : `{'float64', 'float32'}`
+        Type of the data arrays used.
+
+    Notes
+    -----
+    This class should be not used by end-users, it is intended for
+    development only.
+    """
+
+    # A dict which specifies for each operation how many times we
+    # pass through data
+    pass_per_operation = {LOSS: 1}
+
+    _attrinfos = {
+        "_fitted": {
+            "writable": False
+        },
+        N_CALLS_LOSS: {
+            "writable": False
+        },
+        PASS_OVER_DATA: {
+            "writable": False
+        },
+        "n_coeffs": {
+            "writable": False
+        },
+        "_model": {
+            "writable": False
+        }
+    }
+
+    # The name of the attribute that might contain the C++ model object
+    _cpp_obj_name = "_model"
+
+    def __init__(self):
+        Base.__init__(self)
+        self._fitted = False
+        self._model = None
+        setattr(self, N_CALLS_LOSS, 0)
+        setattr(self, PASS_OVER_DATA, 0)
+        self.dtype = None
+
+    def fit(self, *args):
+        self._set_data(*args)
+        self._set("_fitted", True)
+        self._set(N_CALLS_LOSS, 0)
+        self._set(PASS_OVER_DATA, 0)
+        return self
+
+    @abstractmethod
+    def _get_n_coeffs(self) -> int:
+        """An abstract method that forces childs to be able to give
+        the number of parameters
+        """
+        pass
+
+    @property
+    def n_coeffs(self):
+        if not self._fitted:
+            raise ValueError(("call ``fit`` before using " "``n_coeffs``"))
+        return self._get_n_coeffs()
+
+    @abstractmethod
+    def _set_data(self, *args):
+        """Must be overloaded in child class. This method is called to
+        fit data onto the gradient.
+        Useful when pre-processing is necessary, etc...
+        It should also set the dtype
+        """
+        pass
+
+    def loss(self, coeffs: np.ndarray) -> float:
+        """Computes the value of the goodness-of-fit at ``coeffs``
+
+        Parameters
+        ----------
+        coeffs : `numpy.ndarray`
+            The loss is computed at this point
+
+        Returns
+        -------
+        output : `float`
+            The value of the loss
+
+        Notes
+        -----
+        The ``fit`` method must be called to give data to the model,
+        before using ``loss``. An error is raised otherwise.
+        """
+        # This is a bit of a hack as I don't see how to control the dtype of
+        #  coeffs returning from scipy through lambdas
+        if coeffs.dtype != self.dtype:
+            warnings.warn(
+                'coeffs vector of type {} has been cast to {}'.format(
+                    coeffs.dtype, self.dtype))
+            coeffs = coeffs.astype(self.dtype)
+
+        if not self._fitted:
+            raise ValueError("call ``fit`` before using ``loss``")
+        if coeffs.shape[0] != self.n_coeffs:
+            raise ValueError(
+                ("``coeffs`` has size %i while the model" +
+                 " expects %i coefficients") % (coeffs.shape[0], self.n_coeffs))
+        self._inc_attr(N_CALLS_LOSS)
+        self._inc_attr(PASS_OVER_DATA, step=self.pass_per_operation[LOSS])
+
+        return self._loss(coeffs)
+
+    @abstractmethod
+    def _loss(self, coeffs: np.ndarray) -> float:
+        """Must be overloaded in child class
+        """
+        pass
+
+    def _get_typed_class(self, dtype_or_object_with_dtype, dtype_map):
+        """Deduce dtype and return true if C++ _model should be set
+        """
+        import tick.base.dtype_to_cpp_type
+        return tick.base.dtype_to_cpp_type.get_typed_class(
+            self, dtype_or_object_with_dtype, dtype_map)
+
+    def astype(self, dtype_or_object_with_dtype):
+        import tick.base.dtype_to_cpp_type
+        new_model = tick.base.dtype_to_cpp_type.copy_with(
+            self,
+            ["_model"]  # ignore _model on deepcopy
+        )
+        new_model._set('_model',
+                       new_model._build_cpp_model(dtype_or_object_with_dtype))
+        return new_model
+
+    def _build_cpp_model(self, dtype: str):
+        raise ValueError("""This function is expected to
+                            overriden in a subclass""".strip())
+
+
+class ModelFirstOrder(Model):
+    """An abstract class for models that implement a model with first
+    order information, namely gradient information
+
+    Attributes
+    ----------
+    n_coeffs : `int` (read-only)
+        Total number of coefficients of the model
+
+    n_calls_loss : `int` (read-only)
+        Number of times ``loss`` has been called so far
+
+    n_passes_over_data : `int` (read-only)
+        Number of effective passes through the data
+
+    n_calls_grad : `int` (read-only)
+        Number of times ``grad`` has been called so far
+
+    n_calls_loss_and_grad : `int` (read-only)
+        Number of times ``loss_and_grad`` has been called so far
+
+    Notes
+    -----
+    This class should be not used by end-users, it is intended for
+    development only.
+    """
+    # A dict which specifies for each operation how many times we pass
+    # through data
+    pass_per_operation = {
+        k: v
+        for d in [Model.pass_per_operation, {
+            GRAD: 1,
+            LOSS_AND_GRAD: 2
+        }] for k, v in d.items()
+    }
+
+    _attrinfos = {
+        N_CALLS_GRAD: {
+            "writable": False
+        },
+        N_CALLS_LOSS_AND_GRAD: {
+            "writable": False
+        },
+    }
+
+    def __init__(self):
+        Model.__init__(self)
+        setattr(self, N_CALLS_GRAD, 0)
+        setattr(self, N_CALLS_LOSS_AND_GRAD, 0)
+
+    def fit(self, *args):
+        Model.fit(self, *args)
+        self._set(N_CALLS_GRAD, 0)
+        self._set(N_CALLS_LOSS_AND_GRAD, 0)
+        return self
+
+    def grad(self, coeffs: np.ndarray, out: np.ndarray = None) -> np.ndarray:
+        """Computes the gradient of the model at ``coeffs``
+
+        Parameters
+        ----------
+        coeffs : `numpy.ndarray`
+            Vector where gradient is computed
+
+        out : `numpy.ndarray` or `None`
+            If `None` a new vector containing the gradient is returned,
+            otherwise, the result is saved in ``out`` and returned
+
+        Returns
+        -------
+        output : `numpy.ndarray`
+            The gradient of the model at ``coeffs``
+
+        Notes
+        -----
+        The ``fit`` method must be called to give data to the model,
+        before using ``grad``. An error is raised otherwise.
+        """
+        if coeffs.dtype != self.dtype:
+            warnings.warn(
+                'coeffs vector of type {} has been cast to {}'.format(
+                    coeffs.dtype, self.dtype))
+            coeffs = coeffs.astype(self.dtype)
+
+        if not self._fitted:
+            raise ValueError("call ``fit`` before using ``grad``")
+
+        if coeffs.shape[0] != self.n_coeffs:
+            raise ValueError(
+                ("``coeffs`` has size %i while the model" +
+                 " expects %i coefficients") % (len(coeffs), self.n_coeffs))
+
+        if out is not None:
+            grad = out
+        else:
+            grad = np.empty(self.n_coeffs, dtype=self.dtype)
+
+        self._inc_attr(N_CALLS_GRAD)
+        self._inc_attr(PASS_OVER_DATA, step=self.pass_per_operation[GRAD])
+
+        self._grad(coeffs, out=grad)
+        return grad
+
+    @abstractmethod
+    def _grad(self, coeffs: np.ndarray, out: np.ndarray) -> None:
+        """Computes the gradient of the model at ``coeffs``
+        The gradient must be stored in ``out``
+
+        Notes
+        -----
+        Must be overloaded in child class
+        """
+        pass
+
+    # TODO: better method annotation giving the type in the tuple
+    def loss_and_grad(self, coeffs: np.ndarray,
+                      out: np.ndarray = None) -> tuple:
+        """Computes the value and the gradient of the function at
+        ``coeffs``
+
+        Parameters
+        ----------
+        coeffs : `numpy.ndarray`
+            Vector where the loss and gradient are computed
+
+        out : `numpy.ndarray` or `None`
+            If `None` a new vector containing the gradient is returned,
+            otherwise, the result is saved in ``out`` and returned
+
+        Returns
+        -------
+        loss : `float`
+            The value of the loss
+
+        grad : `numpy.ndarray`
+            The gradient of the model at ``coeffs``
+
+        Notes
+        -----
+        The ``fit`` method must be called to give data to the model,
+        before using ``loss_and_grad``. An error is raised otherwise.
+
+        """
+        if not self._fitted:
+            raise ValueError("call ``fit`` before using " "``loss_and_grad``")
+
+        if coeffs.shape[0] != self.n_coeffs:
+            raise ValueError(
+                ("``coeffs`` has size %i while the model" +
+                 "expects %i coefficients") % (len(coeffs), self.n_coeffs))
+        if out is not None:
+            grad = out
+        else:
+            grad = np.empty(self.n_coeffs, dtype=self.dtype)
+
+        self._inc_attr(N_CALLS_LOSS_AND_GRAD)
+        self._inc_attr(N_CALLS_LOSS)
+        self._inc_attr(N_CALLS_GRAD)
+        self._inc_attr(PASS_OVER_DATA,
+                       step=self.pass_per_operation[LOSS_AND_GRAD])
+        loss = self._loss_and_grad(coeffs, out=grad)
+        return loss, grad
+
+    def _loss_and_grad(self, coeffs: np.ndarray, out: np.ndarray) -> float:
+        self._grad(coeffs, out=out)
+        return self._loss(coeffs)
+
+
+class Prox(ABC, Base):
+    """An abstract base class for a proximal operator
+
+    Parameters
+    ----------
+    range : `tuple` of two `int`, default=`None`
+        Range on which the prox is applied
+
+    Attributes
+    ----------
+    dtype : `{'float64', 'float32'}`
+        Type of the arrays used.
+    """
+
+    _attrinfos = {"_prox": {"writable": False}, "_range": {"writable": False}}
+
+    # The name of the attribute that will contain the C++ prox object
+    _cpp_obj_name = "_prox"
+
+    def __init__(self, range: tuple = None):
+        Base.__init__(self)
+        self._range = None
+        self._prox = None
+        self.range = range
+        self.dtype = None
+
+    @property
+    def range(self):
+        return self._range
+
+    @range.setter
+    def range(self, val):
+        if val is not None:
+            if len(val) != 2:
+                raise ValueError("``range`` must be a tuple with 2 "
+                                 "elements")
+            if val[0] >= val[1]:
+                raise ValueError("first element must be smaller than "
+                                 "second element in ``range``")
+            self._set("_range", val)
+            _prox = self._prox
+            if _prox is not None:
+                _prox.set_start_end(val[0], val[1])
+
+    def call(self, coeffs, step=1., out=None):
+        """Apply proximal operator on a vector.
+        It computes:
+
+        .. math::
+            argmin_x \\big( f(x) + \\frac{1}{2} \|x - v\|_2^2 \\big)
+
+        Parameters
+        ----------
+        coeffs : `numpy.ndarray`, shape=(n_coeffs,)
+            Input vector on which is applied the proximal operator
+
+        step : `float` or `np.array`, default=1.
+            The amount of penalization is multiplied by this amount
+
+            * If `float`, the amount of penalization is multiplied by
+              this amount
+            * If `np.array`, then each coordinate of coeffs (within
+              the given range), receives an amount of penalization
+              multiplied by t (available only for separable prox)
+
+        out : `numpy.ndarray`, shape=(n_params,), default=None
+            If not `None`, the output is stored in the given ``out``.
+            Otherwise, a new vector is created.
+
+        Returns
+        -------
+        output : `numpy.ndarray`, shape=(n_coeffs,)
+            Same object as out
+
+        Notes
+        -----
+        ``step`` must have the same size as ``coeffs`` whenever range is
+        `None`, or a size matching the one given by the range
+        otherwise
+        """
+        if out is None:
+            # We don't have an output vector, we create a fresh copy
+            out = coeffs.copy()
+        else:
+            # We do an inplace copy of coeffs into out
+            out[:] = coeffs
+        # Apply the proximal, the output is in out
+        self._call(coeffs, step, out)
+        return out
+
+    @abstractmethod
+    def _call(self, coeffs: np.ndarray, step: object, out: np.ndarray) -> None:
+        pass
+
+    @abstractmethod
+    def value(self, coeffs: np.ndarray) -> float:
+        pass
+
+    def _get_typed_class(self, dtype_or_object_with_dtype, dtype_map):
+        import tick.base.dtype_to_cpp_type
+        return tick.base.dtype_to_cpp_type.get_typed_class(
+            self, dtype_or_object_with_dtype, dtype_map)
+
+    def _extract_dtype(self, dtype_or_object_with_dtype):
+        import tick.base.dtype_to_cpp_type
+        return tick.base.dtype_to_cpp_type.extract_dtype(
+            dtype_or_object_with_dtype)
+
+    def astype(self, dtype_or_object_with_dtype):
+        import tick.base.dtype_to_cpp_type
+        new_prox = tick.base.dtype_to_cpp_type.copy_with(
+            self,
+            ["_prox"]  # ignore _prox on deepcopy
+        )
+        new_prox._set('_prox',
+                      new_prox._build_cpp_prox(dtype_or_object_with_dtype))
+        return new_prox
+
+    def _build_cpp_prox(self, dtype):
+        raise ValueError("""This function is expected to
+                            overriden in a subclass""".strip())
+
+class ProxZero(Prox):
+    """Proximal operator of the null function (identity)
+
+    Parameters
+    ----------
+    range : `tuple` of two `int`, default=`None`
+        Range on which the prox is applied. If `None` then the prox is
+        applied on the whole vector
+
+    Attributes
+    ----------
+    dtype : `{'float64', 'float32'}`
+        Type of the arrays used.
+
+    Notes
+    -----
+    Using ``ProxZero`` means no penalization is applied on the model.
+    """
+
+    def __init__(self, range: tuple = None):
+        Prox.__init__(self, range)
+        self._prox = self._build_cpp_prox("float64")
+
+    def _call(self, coeffs: np.ndarray, step: object, out: np.ndarray):
+        self._prox.call(coeffs, step, out)
+
+    def value(self, coeffs: np.ndarray):
+        """
+        Returns the value of the penalization at ``coeffs``
+
+        Parameters
+        ----------
+        coeffs : `numpy.ndarray`, shape=(n_coeffs,)
+            The value of the penalization is computed at this point
+
+        Returns
+        -------
+        output : `float`
+            Value of the penalization at ``coeffs``
+        """
+        return self._prox.value(coeffs)
+
+    def _build_cpp_prox(self, dtype_or_object_with_dtype):
+        self.dtype = self._extract_dtype(dtype_or_object_with_dtype)
+        prox_class = self._get_typed_class(dtype_or_object_with_dtype,
+                                           dtype_map)
+        if self.range is None:
+            return prox_class(0.)
+        else:
+            return prox_class(0., self.range[0], self.range[1])
+
+
+class ProxL1(Prox):
+    """Proximal operator of the L1 norm (soft-thresholding)
+
+    Parameters
+    ----------
+    strength : `float`
+        Level of L1 penalization
+
+    range : `tuple` of two `int`, default=`None`
+        Range on which the prox is applied. If `None` then the prox is
+        applied on the whole vector
+
+    positive : `bool`, default=`False`
+        If True, apply L1 penalization together with a projection
+        onto the set of vectors with non-negative entries
+
+    Attributes
+    ----------
+    dtype : `{'float64', 'float32'}`
+        Type of the arrays used.
+    """
+
+    _attrinfos = {
+        "strength": {
+            "writable": True,
+            "cpp_setter": "set_strength"
+        },
+        "positive": {
+            "writable": True,
+            "cpp_setter": "set_positive"
+        }
+    }
+
+    def __init__(self, strength: float, range: tuple = None,
+                 positive: bool = False):
+        Prox.__init__(self, range)
+        self.positive = positive
+        self.strength = strength
+        self._prox = self._build_cpp_prox("float64")
+
+    def _call(self, coeffs: np.ndarray, step: object, out: np.ndarray):
+        self._prox.call(coeffs, step, out)
+
+    def value(self, coeffs: np.ndarray):
+        """Returns the value of the penalization at ``coeffs``
+
+        Parameters
+        ----------
+        coeffs : `numpy.ndarray`, shape=(n_coeffs,)
+            The value of the penalization is computed at this point
+
+        Returns
+        -------
+        output : `float`
+            Value of the penalization at ``coeffs``
+        """
+        return self._prox.value(coeffs)
+
+    def _build_cpp_prox(self, dtype_or_object_with_dtype):
+        self.dtype = self._extract_dtype(dtype_or_object_with_dtype)
+        prox_class = self._get_typed_class(dtype_or_object_with_dtype,
+                                           dtype_map)
+        if self.range is None:
+            return prox_class(self.strength, self.positive)
+        else:
+            return prox_class(self.strength, self.range[0], self.range[1],
+                              self.positive)
+
+class ProxL2Sq(Prox):
+    """Proximal operator of the squared L2 norm (ridge penalization)
+
+    Parameters
+    ----------
+    strength : `float`, default=0.
+        Level of L2 penalization
+
+    range : `tuple` of two `int`, default=`None`
+        Range on which the prox is applied. If `None` then the prox is
+        applied on the whole vector
+
+    positive : `bool`, default=`False`
+        If True, apply L2 penalization together with a projection
+        onto the set of vectors with non-negative entries
+
+    Attributes
+    ----------
+    dtype : `{'float64', 'float32'}`
+        Type of the arrays used.
+    """
+
+    _attrinfos = {
+        "strength": {
+            "writable": True,
+            "cpp_setter": "set_strength"
+        },
+        "positive": {
+            "writable": True,
+            "cpp_setter": "set_positive"
+        }
+    }
+
+    def __init__(self, strength: float, range: tuple = None,
+                 positive: bool = False):
+        Prox.__init__(self, range)
+        self.positive = positive
+        self.strength = strength
+        self._prox = self._build_cpp_prox("float64")
+
+    def _call(self, coeffs: np.ndarray, step: object, out: np.ndarray):
+        self._prox.call(coeffs, step, out)
+
+    def value(self, coeffs: np.ndarray):
+        """
+        Returns the value of the penalization at ``coeffs``
+
+        Parameters
+        ----------
+        coeffs : `numpy.ndarray`, shape=(n_coeffs,)
+            The value of the penalization is computed at this point
+
+        Returns
+        -------
+        output : `float`
+            Value of the penalization at ``coeffs``
+        """
+
+        return self._prox.value(coeffs)
+
+    def _build_cpp_prox(self, dtype_or_object_with_dtype):
+        self.dtype = self._extract_dtype(dtype_or_object_with_dtype)
+        prox_class = self._get_typed_class(dtype_or_object_with_dtype,
+                                           dtype_map)
+        if self.range is None:
+            return prox_class(self.strength, self.positive)
+        else:
+            return prox_class(self.strength, self.range[0], self.range[1],
+                              self.positive)
+
+
+class ProxElasticNet(Prox):
+    """
+    Proximal operator of the ElasticNet regularization.
+
+    Parameters
+    ----------
+    strength : `float`
+        Level of ElasticNet regularization
+
+    range : `tuple` of two `int`, default=`None`
+        Range on which the prox is applied. If `None` then the prox is
+        applied on the whole vector
+
+    ratio : `float`, default=0
+        The ElasticNet mixing parameter, with 0 <= ratio <= 1.
+        For ratio = 0 this is ridge (L2) regularization
+        For ratio = 1 this is lasso (L1) regularization
+        For 0 < ratio < 1, the regularization is a linear combination
+        of L1 and L2.
+
+    positive : `bool`, default=`False`
+        If True, apply the penalization together with a projection
+        onto the set of vectors with non-negative entries
+
+    Attributes
+    ----------
+    dtype : `{'float64', 'float32'}`
+        Type of the arrays used.
+    """
+
+    _attrinfos = {
+        "strength": {
+            "writable": True,
+            "cpp_setter": "set_strength"
+        },
+        "ratio": {
+            "writable": True,
+            "cpp_setter": "set_ratio"
+        },
+        "positive": {
+            "writable": True,
+            "cpp_setter": "set_positive"
+        }
+    }
+
+    def __init__(self, strength: float, ratio: float, range: tuple = None,
+                 positive=False):
+        Prox.__init__(self, range)
+        self.positive = positive
+        self.strength = strength
+        self.ratio = ratio
+        self._prox = self._build_cpp_prox("float64")
+
+    def _call(self, coeffs: np.ndarray, step: object, out: np.ndarray):
+        self._prox.call(coeffs, step, out)
+
+    def value(self, coeffs: np.ndarray):
+        """
+        Returns the value of the penalization at ``coeffs``
+
+        Parameters
+        ----------
+        coeffs : `numpy.ndarray`, shape=(n_coeffs,)
+            The value of the penalization is computed at this point
+
+        Returns
+        -------
+        output : `float`
+            Value of the penalization at ``coeffs``
+        """
+        return self._prox.value(coeffs)
+
+    def _build_cpp_prox(self, dtype_or_object_with_dtype):
+        self.dtype = self._extract_dtype(dtype_or_object_with_dtype)
+        prox_class = self._get_typed_class(dtype_or_object_with_dtype,
+                                           dtype_map)
+        if self.range is None:
+            return prox_class(self.strength, self.ratio, self.positive)
+        else:
+            return prox_class(self.strength, self.ratio, self.range[0],
+                              self.range[1], self.positive)
+
+
+class ProxTV(Prox):
+    """Proximal operator of the total-variation penalization
+
+    Parameters
+    ----------
+    strength : `float`
+        Level of total-variation penalization
+
+    range : `tuple` of two `int`, default=`None`
+        Range on which the prox is applied. If `None` then the prox is
+        applied on the whole vector
+
+    positive : `bool`, default=`False`
+        If True, apply L1 penalization together with a projection
+        onto the set of vectors with non-negative entries
+
+    Attributes
+    ----------
+    dtype : `{'float64', 'float32'}`
+        Type of the arrays used.
+
+    Notes
+    -----
+    Uses the fast-TV algorithm described in:
+
+    * "A Direct Algorithm for 1D Total Variation Denoising"
+      by Laurent Condat, *Ieee Signal Proc. Letters*
+    """
+
+    _attrinfos = {
+        "strength": {
+            "writable": True,
+            "cpp_setter": "set_strength"
+        },
+        "positive": {
+            "writable": True,
+            "cpp_setter": "set_positive"
+        }
+    }
+
+    def __init__(self, strength: float, range: tuple = None,
+                 positive: bool = False):
+        Prox.__init__(self, range)
+        self.positive = positive
+        self.strength = strength
+        self._prox = self._build_cpp_prox("float64")
+
+    def _call(self, coeffs: np.ndarray, step: float, out: np.ndarray):
+        self._prox.call(coeffs, step, out)
+
+    def value(self, coeffs: np.ndarray):
+        """
+        Returns the value of the penalization at ``coeffs``
+
+        Parameters
+        ----------
+        coeffs : `numpy.ndarray`, shape=(n_coeffs,)
+            The value of the penalization is computed at this point
+
+        Returns
+        -------
+        output : `float`
+            Value of the penalization at ``coeffs``
+        """
+        return self._prox.value(coeffs)
+
+    def _build_cpp_prox(self, dtype_or_object_with_dtype):
+        self.dtype = self._extract_dtype(dtype_or_object_with_dtype)
+        prox_class = self._get_typed_class(dtype_or_object_with_dtype,
+                                           dtype_map)
+        if self.range is None:
+            return prox_class(self.strength, self.positive)
+        else:
+            return prox_class(self.strength, self.range[0], self.range[1],
+                              self.positive)
+
+class ProxWithGroups(Prox):
+    """Base class of a proximal operator with groups. It applies specific
+    proximal operator in each group, or block. Blocks (non-overlapping) are
+    specified by the ``blocks_start`` and ``blocks_length`` parameters.
+    This base class is not intented for end-users, but for developers only.
+
+    Parameters
+    ----------
+    strength : `float`
+        Level of penalization
+
+    blocks_start : `list` or `numpy.array`, shape=(n_blocks,)
+        First entry of each block
+
+    blocks_length : `list` or `numpy.array`, shape=(n_blocks,)
+        Size of each block
+
+    range : `tuple` of two `int`, default=`None`
+        Range on which the prox is applied. If `None` then the prox is
+        applied on the whole vector
+
+    positive : `bool`, default=`False`
+        If True, apply the penalization together with a projection
+        onto the set of vectors with non-negative entries
+
+    Attributes
+    ----------
+    n_blocks : `int`
+        Number of blocks
+    """
+
+    _attrinfos = {
+        "strength": {
+            "writable": True,
+            "cpp_setter": "set_strength"
+        },
+        "positive": {
+            "writable": True,
+            "cpp_setter": "set_positive"
+        },
+        "blocks_start": {
+            "writable": True,
+            "cpp_setter": "set_blocks_start"
+        },
+        "blocks_length": {
+            "writable": True,
+            "cpp_setter": "set_blocks_length"
+        }
+    }
+
+    def __init__(self, strength: float, blocks_start, blocks_length,
+                 range: tuple = None, positive: bool = False):
+        Prox.__init__(self, range)
+
+        if any(length <= 0 for length in blocks_length):
+            raise ValueError("all blocks must be of positive size")
+        if any(start < 0 for start in blocks_start):
+            raise ValueError("all blocks must have positive starting indices")
+
+        if type(blocks_start) is list:
+            blocks_start = np.array(blocks_start, dtype=np.uint64)
+        if type(blocks_length) is list:
+            blocks_length = np.array(blocks_length, dtype=np.uint64)
+
+        if blocks_start.dtype is not np.uint64:
+            blocks_start = blocks_start.astype(np.uint64)
+        if blocks_length.dtype is not np.uint64:
+            blocks_length = blocks_length.astype(np.uint64)
+
+        if blocks_start.shape != blocks_length.shape:
+            raise ValueError("``blocks_start`` and ``blocks_length`` "
+                             "must have the same size")
+        if np.any(blocks_start[1:] < blocks_start[:-1]):
+            raise ValueError('``block_start`` must be sorted')
+        if np.any(blocks_start[1:] < blocks_start[:-1] + blocks_length[:-1]):
+            raise ValueError("blocks must not overlap")
+
+        self.strength = strength
+        self.positive = positive
+        self.blocks_start = blocks_start
+        self.blocks_length = blocks_length
+
+        # Get the C++ prox class, given by an overloaded method
+        self._prox = self._build_cpp_prox("float64")
+
+    @property
+    def n_blocks(self):
+        return self.blocks_start.shape[0]
+
+    def _call(self, coeffs: np.ndarray, t: float, out: np.ndarray):
+        self._prox.call(coeffs, t, out)
+
+    def value(self, coeffs: np.ndarray):
+        """
+        Returns the value of the penalization at ``coeffs``
+
+        Parameters
+        ----------
+        coeffs : `numpy.array`, shape=(n_coeffs,)
+            The value of the penalization is computed at this point
+
+        Returns
+        -------
+        output : `float`
+            Value of the penalization at ``coeffs``
+        """
+        return self._prox.value(coeffs)
+
+    def _as_dict(self):
+        dd = Prox._as_dict(self)
+        del dd["blocks_start"]
+        del dd["blocks_length"]
+        return dd
+
+    def _build_cpp_prox(self, dtype_or_object_with_dtype):
+        dtype_map = self._get_dtype_map()
+        self.dtype = self._extract_dtype(dtype_or_object_with_dtype)
+        prox_class = self._get_typed_class(dtype_or_object_with_dtype,
+                                           dtype_map)
+
+        if self.range is None:
+            return prox_class(self.strength, self.blocks_start,
+                              self.blocks_length, self.positive)
+        else:
+            start, end = self.range
+            i_max = self.blocks_start.argmax()
+            if end - start < self.blocks_start[i_max] + self.blocks_length[i_max]:
+                raise ValueError("last block is not within the range "
+                                 "[0, end-start)")
+            return prox_class(self.strength, self.blocks_start,
+                              self.blocks_length, start, end, self.positive)
+
+    def _get_dtype_map(self):
+        raise ValueError("""This function is expected to
+                            overriden in a subclass""".strip())
+
+
+class ProxBinarsity(ProxWithGroups):
+    """Proximal operator of binarsity. It is simply a succession of two steps on
+    different intervals: ``ProxTV`` plus a centering translation. More
+    precisely, total-variation regularization is applied on a coefficient vector
+    being a concatenation of multiple coefficient vectors corresponding to
+    blocks, followed by centering within sub-blocks. Blocks (non-overlapping)
+    are specified by the ``blocks_start`` and ``blocks_length`` parameters.
+
+    Parameters
+    ----------
+    strength : `float`
+        Level of total-variation penalization
+
+    blocks_start : `np.array`, shape=(n_blocks,)
+        First entry of each block
+
+    blocks_length : `np.array`, shape=(n_blocks,)
+        Size of each block
+
+    range : `tuple` of two `int`, default=`None`
+        Range on which the prox is applied. If `None` then the prox is
+        applied on the whole vector
+
+    positive : `bool`, default=`False`
+        If True, apply in the end a projection onto the set of vectors with
+        non-negative entries
+
+    Attributes
+    ----------
+    n_blocks : `int`
+        Number of blocks
+
+    dtype : `{'float64', 'float32'}`
+        Type of the arrays used.
+
+    References
+    ----------
+    ProxBinarsity uses the fast-TV algorithm described in:
+
+    Condat, L. (2012).
+    `A Direct Algorithm for 1D Total Variation Denoising`_.
+
+    .. _A Direct Algorithm for 1D Total Variation Denoising: https://hal.archives-ouvertes.fr/hal-00675043v2/document
+    """
+
+    def __init__(self, strength: float, blocks_start, blocks_length,
+                 range: tuple = None, positive: bool = False):
+        ProxWithGroups.__init__(self, strength, blocks_start, blocks_length,
+                                range, positive)
+        self._prox = self._build_cpp_prox("float64")
+
+    def _get_dtype_map(self):
+        return dtype_map
+
+
+
+class LearnerOptim(ABC, Base):
+    """Learner for all models that are inferred with a `tick.solver`
+    and a `tick.prox`
+    Not intended for end-users, but for development only.
+    It should be sklearn-learn compliant
+
+    Parameters
+    ----------
+    C : `float`, default=1e3
+        Level of penalization
+
+    penalty : 'none', 'l1', 'l2', 'elasticnet', 'tv', 'binarsity', default='l2'
+        The penalization to use. Default 'l2', namely is ridge penalization.
+
+    solver : 'gd', 'agd', 'bfgs', 'svrg', 'sdca'
+        The name of the solver to use
+
+    warm_start : `bool`, default=False
+        If true, learning will start from the last reached solution
+
+    step : `float`, default=None
+        Initial step size used for learning. Used in 'gd', 'agd', 'sgd'
+        and 'svrg' solvers
+
+    tol : `float`, default=1e-5
+        The tolerance of the solver (iterations stop when the stopping
+        criterion is below it). By default the solver does ``max_iter``
+        iterations
+
+    max_iter : `int`, default=100
+        Maximum number of iterations of the solver
+
+    verbose : `bool`, default=True
+        If `True`, we verbose things, otherwise the solver does not
+        print anything (but records information in history anyway)
+
+    print_every : `int`, default=10
+        Print history information when ``n_iter`` (iteration number) is
+        a multiple of ``print_every``
+
+    record_every : `int`, default=10
+        Record history information when ``n_iter`` (iteration number) is
+        a multiple of ``record_every``
+
+    Other Parameters
+    ----------------
+    sdca_ridge_strength : `float`, default=1e-3
+        It controls the strength of the additional ridge penalization. Used in
+        'sdca' solver
+
+    elastic_net_ratio : `float`, default=0.95
+        Ratio of elastic net mixing parameter with 0 <= ratio <= 1.
+        For ratio = 0 this is ridge (L2 squared) regularization
+        For ratio = 1 this is lasso (L1) regularization
+        For 0 < ratio < 1, the regularization is a linear combination
+        of L1 and L2.
+        Used in 'elasticnet' penalty
+
+    random_state : int seed, RandomState instance, or None (default)
+        The seed that will be used by stochastic solvers. Used in 'sgd',
+        'svrg', and 'sdca' solvers
+
+    blocks_start : `numpy.array`, shape=(n_features,), default=None
+        The indices of the first column of each binarized feature blocks. It
+        corresponds to the ``feature_indices`` property of the
+        ``FeaturesBinarizer`` preprocessing.
+        Used in 'binarsity' penalty
+
+    blocks_length : `numpy.array`, shape=(n_features,), default=None
+        The length of each binarized feature blocks. It corresponds to the
+        ``n_values`` property of the ``FeaturesBinarizer`` preprocessing.
+        Used in 'binarsity' penalty
+    """
+
+
+    _attrinfos = {
+        "solver": {
+            "writable": False
+        },
+        "_solver_obj": {
+            "writable": False
+        },
+        "penalty": {
+            "writable": False
+        },
+        "_prox_obj": {
+            "writable": False
+        },
+        "_model_obj": {
+            "writable": False
+        },
+        "_fitted": {
+            "writable": False
+        },
+        "_C": {
+            "writable": False
+        },
+        "random_state": {
+            "writable": False
+        },
+        "_warm_start": {
+            "writable": False
+        },
+        "_actual_kwargs": {
+            "writable": False
+        },
+    }
+
+    _solvers = {
+        'gd': 'GD',
+        'agd': 'AGD',
+        'sgd': 'SGD',
+        'svrg': 'SVRG',
+        'bfgs': 'BFGS',
+        'sdca': 'SDCA'
+    }
+    _solvers_with_linesearch = ['gd', 'agd']
+    _solvers_with_step = ['gd', 'agd', 'svrg', 'sgd']
+    _solvers_stochastic = ['sgd', 'svrg', 'sdca']
+    _penalties = {
+        'none': ProxZero,
+        'l1': ProxL1,
+        'l2': ProxL2Sq,
+        'elasticnet': ProxElasticNet,
+        'tv': ProxTV,
+        'binarsity': ProxBinarsity
+    }
+
+    def __init__(self, penalty='l2', C=1e3, solver="svrg", step=None, tol=1e-5,
+                 max_iter=100, verbose=True, warm_start=False, print_every=10,
+                 record_every=10, sdca_ridge_strength=1e-3,
+                 elastic_net_ratio=0.95, random_state=None, blocks_start=None,
+                 blocks_length=None, extra_model_kwargs=None,
+                 extra_prox_kwarg=None):
+
+        Base.__init__(self)
+        if not hasattr(self, "_actual_kwargs"):
+            self._actual_kwargs = {}
+
+        # Construct the model
+        if extra_model_kwargs is None:
+            extra_model_kwargs = {}
+        self._model_obj = self._construct_model_obj(**extra_model_kwargs)
+
+        # Construct the solver. The solver is created at creation of the
+        # learner, and cannot be instantiated again (using another solver type)
+        # afterwards.
+        self.solver = solver
+        self._set_random_state(random_state)
+        self._solver_obj = self._construct_solver_obj(
+            solver, step, max_iter, tol, print_every, record_every, verbose,
+            sdca_ridge_strength)
+
+        # Construct the prox. The prox is created at creation of the
+        # learner, and cannot be instantiated again (using another prox type)
+        # afterwards.
+        self.penalty = penalty
+        if extra_prox_kwarg is None:
+            extra_prox_kwarg = {}
+        self._prox_obj = self._construct_prox_obj(penalty, elastic_net_ratio,
+                                                  blocks_start, blocks_length,
+                                                  extra_prox_kwarg)
+
+        # Set C after creating prox to set prox strength
+        if 'C' in self._actual_kwargs or penalty != 'none':
+            # Print self.C = C
+            self.C = C
+
+        self.record_every = record_every
+        self.step = step
+        self._fitted = False
+        self.warm_start = warm_start
+
+        if 'sdca_ridge_strength' in self._actual_kwargs or solver == 'sdca':
+            self.sdca_ridge_strength = sdca_ridge_strength
+
+        if 'elastic_net_ratio' in self._actual_kwargs or \
+                        penalty == 'elasticnet':
+            self.elastic_net_ratio = elastic_net_ratio
+
+        if 'blocks_start' in self._actual_kwargs or penalty == 'binarsity':
+            self.blocks_start = blocks_start
+
+        if 'blocks_length' in self._actual_kwargs or penalty == 'binarsity':
+            self.blocks_length = blocks_length
+
+    @abstractmethod
+    def _construct_model_obj(self, **kwargs):
+        pass
+
+    def _construct_solver_obj(self, solver, step, max_iter, tol, print_every,
+                              record_every, verbose, sdca_ridge_strength):
+        # Parameters of the solver
+        from tick.solver import AGD, GD, BFGS, SGD, SVRG, SDCA
+        solvers = {
+            'AGD': AGD,
+            'BFGS': BFGS,
+            'GD': GD,
+            'SGD': SGD,
+            'SVRG': SVRG,
+            'SDCA': SDCA
+        }
+        solver_args = []
+        solver_kwargs = {
+            'max_iter': max_iter,
+            'tol': tol,
+            'print_every': print_every,
+            'record_every': record_every,
+            'verbose': verbose
+        }
+
+        allowed_solvers = list(self._solvers.keys())
+        allowed_solvers.sort()
+        if solver not in self._solvers:
+            raise ValueError("``solver`` must be one of %s, got %s" %
+                             (', '.join(allowed_solvers), solver))
+        else:
+            if solver in self._solvers_with_step:
+                solver_kwargs['step'] = step
+            if solver in self._solvers_stochastic:
+                solver_kwargs['seed'] = self._seed
+            if solver == 'sdca':
+                solver_args += [sdca_ridge_strength]
+
+            solver_obj = solvers[self._solvers[solver]](*solver_args, **solver_kwargs)
+
+        return solver_obj
+
+    def _construct_prox_obj(self, penalty, elastic_net_ratio, blocks_start,
+                            blocks_length, extra_prox_kwarg):
+        # Parameters of the penalty
+        penalty_args = []
+
+        allowed_penalties = list(self._penalties.keys())
+        allowed_penalties.sort()
+        if penalty not in allowed_penalties:
+            raise ValueError("``penalty`` must be one of %s, got %s" %
+                             (', '.join(allowed_penalties), penalty))
+
+        else:
+            if penalty != 'none':
+                # strength will be set by setting C afterwards
+                penalty_args += [0]
+            if penalty == 'elasticnet':
+                penalty_args += [elastic_net_ratio]
+            if penalty == 'binarsity':
+                if blocks_start is None:
+                    raise ValueError(
+                        "Penalty '%s' requires ``blocks_start``, got %s" %
+                        (penalty, str(blocks_start)))
+                elif blocks_length is None:
+                    raise ValueError(
+                        "Penalty '%s' requires ``blocks_length``, got %s" %
+                        (penalty, str(blocks_length)))
+                else:
+                    penalty_args += [blocks_start, blocks_length]
+
+            prox_obj = self._penalties[penalty](*penalty_args,
+                                                **extra_prox_kwarg)
+
+        return prox_obj
+
+    @property
+    def warm_start(self):
+        return self._warm_start
+
+    @warm_start.setter
+    def warm_start(self, val):
+        if val is True and self.solver == 'sdca':
+            raise ValueError('SDCA cannot be warm started')
+        self._warm_start = val
+
+    @property
+    def max_iter(self):
+        return self._solver_obj.max_iter
+
+    @max_iter.setter
+    def max_iter(self, val):
+        self._solver_obj.max_iter = val
+
+    @property
+    def verbose(self):
+        return self._solver_obj.verbose
+
+    @verbose.setter
+    def verbose(self, val):
+        self._solver_obj.verbose = val
+
+    @property
+    def tol(self):
+        return self._solver_obj.tol
+
+    @tol.setter
+    def tol(self, val):
+        self._solver_obj.tol = val
+
+    @property
+    def step(self):
+        if self.solver in self._solvers_with_step:
+            return self._solver_obj.step
+        else:
+            return None
+
+    @step.setter
+    def step(self, val):
+        if self.solver in self._solvers_with_step:
+            self._solver_obj.step = val
+        elif val is not None:
+            warn('Solver "%s" has no settable step' % self.solver,
+                 RuntimeWarning)
+
+    def _set_random_state(self, val):
+        if self.solver in self._solvers_stochastic:
+            if val is not None and val < 0:
+                raise ValueError(
+                    'random_state must be positive, got %s' % str(val))
+            self.random_state = val
+        else:
+            if val is not None:
+                warn('Solver "%s" has no settable random_state' % self.solver,
+                     RuntimeWarning)
+            self.random_state = None
+
+    @property
+    def _seed(self):
+        if self.solver in self._solvers_stochastic:
+            if self.random_state is None:
+                return -1
+            else:
+                return self.random_state
+        else:
+            warn('Solver "%s" has no _seed' % self.solver, RuntimeWarning)
+
+    @property
+    def print_every(self):
+        return self._solver_obj.print_every
+
+    @print_every.setter
+    def print_every(self, val):
+        self._solver_obj.print_every = val
+
+    @property
+    def record_every(self):
+        return self._solver_obj.record_every
+
+    @record_every.setter
+    def record_every(self, val):
+        self._solver_obj.record_every = val
+
+    @property
+    def C(self):
+        if self.penalty == 'none':
+            return 0
+        elif np.isinf(self._prox_obj.strength):
+            return 0
+        elif self._prox_obj.strength == 0:
+            return None
+        else:
+            return 1. / self._prox_obj.strength
+
+    @C.setter
+    def C(self, val):
+        if val is None:
+            strength = 0.
+        elif val <= 0:
+            raise ValueError("``C`` must be positive, got %s" % str(val))
+        else:
+            strength = 1. / val
+
+        if self.penalty != 'none':
+            self._prox_obj.strength = strength
+        else:
+            if val is not None:
+                warn('You cannot set C for penalty "%s"' % self.penalty,
+                     RuntimeWarning)
+
+    @property
+    def elastic_net_ratio(self):
+        if self.penalty == 'elasticnet':
+            return self._prox_obj.ratio
+        else:
+            return None
+
+    @elastic_net_ratio.setter
+    def elastic_net_ratio(self, val):
+        if self.penalty == 'elasticnet':
+            self._prox_obj.ratio = val
+        else:
+            warn(
+                'Penalty "%s" has no elastic_net_ratio attribute' %
+                self.penalty, RuntimeWarning)
+
+    @property
+    def blocks_start(self):
+        if self.penalty == 'binarsity':
+            return self._prox_obj.blocks_start
+        else:
+            return None
+
+    @blocks_start.setter
+    def blocks_start(self, val):
+        if self.penalty == 'binarsity':
+            if type(val) is list:
+                val = np.array(val, dtype=np.uint64)
+            if val.dtype is not np.uint64:
+                val = val.astype(np.uint64)
+            self._prox_obj.blocks_start = val
+        else:
+            warn('Penalty "%s" has no blocks_start attribute' % self.penalty,
+                 RuntimeWarning)
+
+    @property
+    def blocks_length(self):
+        if self.penalty == 'binarsity':
+            return self._prox_obj.blocks_length
+        else:
+            return None
+
+    @blocks_length.setter
+    def blocks_length(self, val):
+        if self.penalty == 'binarsity':
+            if type(val) is list:
+                val = np.array(val, dtype=np.uint64)
+            if val.dtype is not np.uint64:
+                val = val.astype(np.uint64)
+            self._prox_obj.blocks_length = val
+        else:
+            warn('Penalty "%s" has no blocks_length attribute' % self.penalty,
+                 RuntimeWarning)
+
+    @property
+    def sdca_ridge_strength(self):
+        if self.solver == 'sdca':
+            return self._solver_obj._solver.get_l_l2sq()
+        else:
+            return None
+
+    @sdca_ridge_strength.setter
+    def sdca_ridge_strength(self, val):
+        if self.solver == 'sdca':
+            self._solver_obj.l_l2sq = val
+        else:
+            warn(
+                'Solver "%s" has no sdca_ridge_strength attribute' %
+                self.solver, RuntimeWarning)
+
+    @staticmethod
+    def _safe_array(X, dtype="float64"):
+        return safe_array(X, dtype)
+
+
+class CoxRegression(LearnerOptim):
+    """Cox regression learner, using the partial Cox likelihood for
+    proportional risks, with many choices of penalization.
+
+    Note that this learner does not have predict functions
+
+    Parameters
+    ----------
+    C : `float`, default=1e3
+        Level of penalization
+
+    penalty : {'none', 'l1', 'l2', 'elasticnet', 'tv', 'binarsity'}, default='l2'
+        The penalization to use. Default is 'l2', namely Ridge penalization
+
+    solver : {'gd', 'agd'}, default='agd'
+        The name of the solver to use.
+
+    warm_start : `bool`, default=False
+        If true, learning will start from the last reached solution
+
+    step : `float`, default=None
+        Initial step size used for learning. Used when solver is 'gd' or
+        'agd'.
+
+    tol : `float`, default=1e-5
+        The tolerance of the solver (iterations stop when the stopping
+        criterion is below it). By default the solver does ``max_iter``
+        iterations
+
+    max_iter : `int`, default=100
+        Maximum number of iterations of the solver
+
+    verbose : `bool`, default=True
+        If `True`, we verbose things, otherwise the solver does not
+        print anything (but records information in history anyway)
+
+    print_every : `int`, default=10
+        Print history information when ``n_iter`` (iteration number) is
+        a multiple of ``print_every``
+
+    record_every : `int`, default=10
+        Record history information when ``n_iter`` (iteration number) is
+        a multiple of ``record_every``
+
+    Other Parameters
+    ----------------
+    elastic_net_ratio : `float`, default=0.95
+        Ratio of elastic net mixing parameter with 0 <= ratio <= 1.
+        For ratio = 0 this is ridge (L2 squared) regularization
+        For ratio = 1 this is lasso (L1) regularization
+        For 0 < ratio < 1, the regularization is a linear combination
+        of L1 and L2.
+        Used in 'elasticnet' penalty
+
+    random_state : int seed, RandomState instance, or None (default)
+        The seed that will be used by stochastic solvers. Used in 'sgd',
+        'svrg', and 'sdca' solvers
+
+    blocks_start : `numpy.array`, shape=(n_features,), default=None
+        The indices of the first column of each binarized feature blocks. It
+        corresponds to the ``feature_indices`` property of the
+        ``FeaturesBinarizer`` preprocessing.
+        Used in 'binarsity' penalty
+
+    blocks_length : `numpy.array`, shape=(n_features,), default=None
+        The length of each binarized feature blocks. It corresponds to the
+        ``n_values`` property of the ``FeaturesBinarizer`` preprocessing.
+        Used in 'binarsity' penalty
+
+    Attributes
+    ----------
+    coeffs : np.array, shape=(n_features,)
+        The learned coefficients of the model
+    """
+
+    _solvers = {'gd': 'GD', 'agd': 'AGD'}
+
+    _attrinfos = {"_actual_kwargs": {"writable": False}}
+
+    @actual_kwargs
+    def __init__(self, penalty='l2', C=1e3, solver='agd', step=None, tol=1e-5,
+                 max_iter=100, verbose=False, warm_start=False, print_every=10,
+                 record_every=10, elastic_net_ratio=0.95, random_state=None,
+                 blocks_start=None, blocks_length=None):
+
+        self._actual_kwargs = CoxRegression.__init__.actual_kwargs
+        LearnerOptim.__init__(
+            self, penalty=penalty, C=C, solver=solver, step=step, tol=tol,
+            max_iter=max_iter, verbose=verbose, warm_start=warm_start,
+            print_every=print_every, record_every=record_every,
+            sdca_ridge_strength=0, elastic_net_ratio=elastic_net_ratio,
+            random_state=random_state, blocks_start=blocks_start,
+            blocks_length=blocks_length)
+        self.coeffs = None
+
+    def _construct_model_obj(self):
+        return ModelCoxRegPartialLik()
+
+    def _all_safe(self, features: np.ndarray, times: np.array,
+                  censoring: np.array):
+        if not set(np.unique(censoring)).issubset({0, 1}):
+            raise ValueError('``censoring`` must only have values in {0, 1}')
+        # All times must be positive
+        if not np.all(times >= 0):
+            raise ValueError('``times`` array must contain only non-negative '
+                             'entries')
+        features = safe_array(features)
+        times = safe_array(times)
+        censoring = safe_array(censoring, np.ushort)
+        return features, times, censoring
+
+    def fit(self, features: np.ndarray, times: np.array, censoring: np.array):
+        """Fit the model according to the given training data.
+
+        Parameters
+        ----------
+        features : `numpy.ndarray`, shape=(n_samples, n_features)
+            The features matrix
+
+        times : `numpy.array`, shape = (n_samples,)
+            Observed times
+
+        censoring : `numpy.array`, shape = (n_samples,)
+            Indicator of censoring of each sample.
+            ``True`` means true failure, namely non-censored time.
+            dtype must be unsigned short
+
+        Returns
+        -------
+        output : `CoxRegression`
+            The current instance with given data
+        """
+        # The fit from Model calls the _set_data below
+
+        solver_obj = self._solver_obj
+        model_obj = self._model_obj
+        prox_obj = self._prox_obj
+
+        features, times, censoring = self._all_safe(features, times, censoring)
+
+        # Pass the data to the model
+        model_obj.fit(features, times, censoring)
+
+        if self.step is None and self.solver in self._solvers_with_step:
+            if self.solver in self._solvers_with_linesearch:
+                self._solver_obj.linesearch = True
+
+        # No intercept in this model
+        prox_obj.range = (0, model_obj.n_coeffs)
+
+        # Now, we can pass the model and prox objects to the solver
+        solver_obj.set_model(model_obj).set_prox(prox_obj)
+
+        coeffs_start = None
+        if self.warm_start and self.coeffs is not None:
+            coeffs = self.coeffs
+            # ensure starting point has the right format
+            if coeffs.shape == (model_obj.n_coeffs,):
+                coeffs_start = coeffs
+
+        # Launch the solver
+        coeffs = solver_obj.solve(coeffs_start)
+
+        # Get the learned coefficients
+        self._set("coeffs", coeffs)
+        self._set("_fitted", True)
+        return self
+
+    def score(self, features=None, times=None, censoring=None):
+        """Returns the negative log-likelihood of the model, using the current
+        fitted coefficients on the passed data.
+        If no data is passed, the negative log-likelihood is computed using the
+        data used for training.
+
+        Parameters
+        ----------
+        features : `None` or `numpy.ndarray`, shape=(n_samples, n_features)
+            The features matrix
+
+        times : `None` or `numpy.array`, shape = (n_samples,)
+            Observed times
+
+        censoring : `None` or `numpy.array`, shape = (n_samples,)
+            Indicator of censoring of each sample.
+            ``True`` means true failure, namely non-censored time.
+            dtype must be unsigned short
+
+        Returns
+        -------
+        output : `float`
+            The value of the negative log-likelihood
+        """
+        if self._fitted:
+            all_none = all(e is None for e in [features, times, censoring])
+            if all_none:
+                return self._model_obj.loss(self.coeffs)
+            else:
+                if features is None:
+                    raise ValueError('Passed ``features`` is None')
+                elif times is None:
+                    raise ValueError('Passed ``times`` is None')
+                elif censoring is None:
+                    raise ValueError('Passed ``censoring`` is None')
+                else:
+                    features, times, censoring = self._all_safe(
+                        features, times, censoring)
+                    model = ModelCoxRegPartialLik().fit(
+                        features, times, censoring)
+                    return model.loss(self.coeffs)
+        else:
+            raise RuntimeError('You must fit the model first')
+
+
+
+
+
+
+class ModelCoxRegPartialLik(ModelFirstOrder):
+    """Partial likelihood of the Cox regression model (proportional
+    hazards).
+    This class gives first order information (gradient and loss) for
+    this model.
+
+    Attributes
+    ----------
+    features : `numpy.ndarray`, shape=(n_samples, n_features), (read-only)
+        The features matrix
+
+    times : `numpy.ndarray`, shape = (n_samples,), (read-only)
+        Obverved times
+
+    censoring : `numpy.ndarray`, shape = (n_samples,), (read-only)
+        Boolean indicator of censoring of each sample.
+        ``True`` means true failure, namely non-censored time
+
+    n_samples : `int` (read-only)
+        Number of samples
+
+    n_features : `int` (read-only)
+        Number of features
+
+    n_failures : `int` (read-only)
+        Number of true failure times
+
+    n_coeffs : `int` (read-only)
+        Total number of coefficients of the model
+
+    censoring_rate : `float`
+        The censoring_rate (percentage of ???)
+
+    Notes
+    -----
+    There is no intercept in this model
+    """
+
+    _attrinfos = {
+        "features": {
+            "writable": False
+        },
+        "times": {
+            "writable": False
+        },
+        "censoring": {
+            "writable": False
+        },
+        "n_samples": {
+            "writable": False
+        },
+        "n_features": {
+            "writable": False
+        },
+        "n_failures": {
+            "writable": False
+        },
+        "censoring_rate": {
+            "writable": False
+        }
+    }
+
+    def __init__(self):
+        ModelFirstOrder.__init__(self)
+        self.features = None
+        self.times = None
+        self.censoring = None
+        self.n_samples = None
+        self.n_features = None
+        self.n_failures = None
+        self.censoring_rate = None
+        self._model = None
+
+    def fit(self, features: np.ndarray, times: np.array,
+            censoring: np.array) -> Model:
+        """Set the data into the model object
+
+        Parameters
+        ----------
+        features : `numpy.ndarray`, shape=(n_samples, n_features)
+            The features matrix
+
+        times : `numpy.array`, shape = (n_samples,)
+            Observed times
+
+        censoring : `numpy.array`, shape = (n_samples,)
+            Indicator of censoring of each sample.
+            ``True`` means true failure, namely non-censored time.
+            dtype must be unsigned short
+
+        Returns
+        -------
+        output : `ModelCoxRegPartialLik`
+            The current instance with given data
+        """
+        # The fit from Model calls the _set_data below
+        return Model.fit(self, features, times, censoring)
+
+    def _set_data(self, features: np.ndarray, times: np.array,
+                  censoring: np.array):  #
+
+        if self.dtype is None:
+            self.dtype = features.dtype
+            if self.dtype != times.dtype:
+                raise ValueError("Features and labels differ in data types")
+
+        n_samples, n_features = features.shape
+        if n_samples != times.shape[0]:
+            raise ValueError(("Features has %i samples while times "
+                              "have %i" % (n_samples, times.shape[0])))
+        if n_samples != censoring.shape[0]:
+            raise ValueError(("Features has %i samples while censoring "
+                              "have %i" % (n_samples, censoring.shape[0])))
+
+        features = safe_array(features, dtype=self.dtype)
+        times = safe_array(times, dtype=self.dtype)
+        censoring = safe_array(censoring, np.ushort)
+
+        self._set("features", features)
+        self._set("times", times)
+        self._set("censoring", censoring)
+        self._set("n_samples", n_samples)
+        self._set("n_features", n_features)
+        self._set(
+            "_model", dtype_class_mapper[self.dtype](self.features, self.times,
+                                                     self.censoring))
+
+    def _grad(self, coeffs: np.ndarray, out: np.ndarray) -> None:
+        self._model.grad(coeffs, out)
+
+    def _loss(self, coeffs: np.ndarray) -> float:
+        return self._model.loss(coeffs)
+
+    def _get_n_coeffs(self, *args, **kwargs):
+        return self.n_features
+
+    @property
+    def _epoch_size(self):
+        return self.n_failures
+
+    @property
+    def _rand_max(self):
+        # This allows to obtain the range of the random sampling when
+        # using a stochastic optimization algorithm
+        return self.n_failures
+
+    def _as_dict(self):
+        dd = ModelFirstOrder._as_dict(self)
+        del dd["features"]
+        del dd["times"]
+        del dd["censoring"]
+        return dd
+
 
 
 class FeaturesBinarizer(Base, BaseEstimator, TransformerMixin):
