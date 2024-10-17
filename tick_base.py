@@ -33,8 +33,85 @@ warnings.filterwarnings('ignore')
 class _ProxBinarsityDouble:
     def __init__(self, *args, **kwargs):
         pass
-
 class _ProxBinarsityFloat:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxElasticNetDouble:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxElasticNetFloat:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxEqualityDouble:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxEqualityFloat:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxGroupL1Double:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxGroupL1Float:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxL1Double:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxL1Float:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxL1wDouble:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxL1wFloat:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxL2Double:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxL2Float:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxL2sqDouble:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxL2sqFloat:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxMultiDouble:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxMultiFloat:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxSortedL1Double:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxSortedL1Float:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxPositiveDouble:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxPositiveFloat:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxSlopeDouble:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxSlopeFloat:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxTVDouble:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxTVFloat:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxZeroDouble:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ProxZeroFloat:
     def __init__(self, *args, **kwargs):
         pass
 
