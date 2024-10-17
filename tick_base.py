@@ -30,21 +30,6 @@ import pylab as pl
 import warnings
 warnings.filterwarnings('ignore')
 
-from . import ProxZero
-from . import ProxPositive
-from . import ProxL2Sq
-from . import ProxL2
-from . import ProxL1
-from . import ProxL1w
-from . import ProxTV
-from . import ProxNuclear
-from . import ProxSlope
-from . import ProxElasticNet
-from . import ProxMulti
-from . import ProxEquality
-from . import ProxBinarsity
-from . import ProxGroupL1
-
 
 dtype_map = {
     np.dtype("float64"): _ProxBinarsityDouble,
