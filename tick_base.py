@@ -130,8 +130,8 @@ class _ProxTVFloat:
 #    def set_strength(self, strength):
 #        self.strength = strength
 
-from tick.tick.prox.build.prox import ProxZeroDouble as _ProxZeroDouble
-from tick.tick.prox.build.prox import ProxZeroFloat as _ProxZeroFloat
+from tick.prox.build.prox import ProxZeroDouble as _ProxZeroDouble
+from tick.prox.build.prox import ProxZeroFloat as _ProxZeroFloat
 
 
 class SVRG_VarianceReductionMethod_Last:
