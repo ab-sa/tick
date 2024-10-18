@@ -147,6 +147,13 @@ class _SDCADouble:
     def __init__(self, *args, **kwargs):
         pass
 
+class _ModelCoxRegPartialLik_f:
+    def __init__(self, *args, **kwargs):
+        pass
+class _ModelCoxRegPartialLik_d:
+    def __init__(self, *args, **kwargs):
+        pass
+
 
 variance_reduction_methods_mapper = {
     'last': SVRG_VarianceReductionMethod_Last,
@@ -161,7 +168,9 @@ dtype_class_mapper = {
     np.dtype('float32'): _SVRGFloat,
     np.dtype('float64'): _SVRGDouble,
     np.dtype('float32'): _SDCAFloat,
-    np.dtype('float64'): _SDCADouble
+    np.dtype('float64'): _SDCADouble,
+    np.dtype('float32'): _ModelCoxRegPartialLik_f,
+    np.dtype('float64'): _ModelCoxRegPartialLik_d
 }
 
 dtype_map = {
