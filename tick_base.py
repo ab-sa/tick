@@ -117,19 +117,21 @@ class _ProxTVFloat:
 #    def __init__(self, *args, **kwargs):
 #        pass
 
-class _ProxZeroDouble:
-    def __init__(self, strength=None):
-        self.strength = strength
+#class _ProxZeroDouble:
+#    def __init__(self, strength=None):
+#        self.strength = strength
+#
+#    def set_strength(self, strength):
+#        self.strength = strength
+#class _ProxZeroFloat:
+#    def __init__(self, strength=None):
+#        self.strength = strength
+#
+#    def set_strength(self, strength):
+#        self.strength = strength
 
-    def set_strength(self, strength):
-        self.strength = strength
-class _ProxZeroFloat:
-    def __init__(self, strength=None):
-        self.strength = strength
-
-    def set_strength(self, strength):
-        self.strength = strength
-
+from tick.tick.prox.build.prox import ProxZeroDouble as _ProxZeroDouble
+from tick.tick.prox.build.prox import ProxZeroFloat as _ProxZeroFloat
 
 
 class SVRG_VarianceReductionMethod_Last:
