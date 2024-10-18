@@ -30,6 +30,8 @@ import pylab as pl
 import warnings
 warnings.filterwarnings('ignore')
 
+
+
 class _ProxBinarsityDouble:
     def __init__(self, *args, **kwargs):
         pass
@@ -108,12 +110,26 @@ class _ProxTVDouble:
 class _ProxTVFloat:
     def __init__(self, *args, **kwargs):
         pass
+#class _ProxZeroDouble:
+#    def __init__(self, *args, **kwargs, strength=None):
+#        pass
+#class _ProxZeroFloat:
+#    def __init__(self, *args, **kwargs):
+#        pass
+
 class _ProxZeroDouble:
-    def __init__(self, *args, **kwargs):
-        pass
+    def __init__(self, strength=None):
+        self.strength = strength
+
+    def set_strength(self, strength):
+        self.strength = strength
 class _ProxZeroFloat:
-    def __init__(self, *args, **kwargs):
-        pass
+    def __init__(self, strength=None):
+        self.strength = strength
+
+    def set_strength(self, strength):
+        self.strength = strength
+
 
 
 class SVRG_VarianceReductionMethod_Last:
